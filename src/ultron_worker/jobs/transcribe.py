@@ -107,11 +107,11 @@ class Transcribe(JobKind):
             segs = []
             for s in segments:
                 if ctx.stop.is_set():
-                    raise JobError("stopping", retryable=True)
+                    raise JobStopped
                 segs.append(
                     {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()}
                 )
-        except (JobError, ItemFailed):
+        except (JobError, JobStopped, ItemFailed):
             raise
         except Exception as exc:  # noqa: BLE001 (decoder errors are this file's problem)
             raise ItemFailed(f"transcription failed: {exc}") from exc

@@ -22,7 +22,7 @@ from typing import Any
 from . import __version__, jobs
 from .backbone import Backbone, BackboneError, BackboneUnavailable, ScopeViolation
 from .config import Config
-from .jobs.base import ItemFailed, JobContext, JobError, JobSpec, WorkItem
+from .jobs.base import ItemFailed, JobContext, JobError, JobSpec, JobStopped, WorkItem
 from .ollama import Ollama, OllamaModelMissing, OllamaUnavailable
 from .state import StatusBoard, Store, now_iso
 
@@ -166,7 +166,7 @@ class Runner:
         )
         try:
             self._run(tid, title, data, job)
-        except _Stopped:
+        except (_Stopped, JobStopped):
             log.info("job %s paused for shutdown at %s items", tid, self.store.job(tid)["done"])
             self.store.update_job(tid, current_item=None)
             return

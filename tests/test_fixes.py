@@ -129,3 +129,22 @@ def test_failed_attempt_still_counts_its_active_time(make, library, tmp_path) ->
     runner.tick()
     job = runner.store.job("t1")
     assert job["status"] == "retry_wait" and job["active_seconds"] >= 0.1
+
+
+def test_shutdown_inside_an_item_is_a_pause_not_an_attempt(make, library, tmp_path) -> None:
+    from ultron_worker.jobs.base import JobStopped
+
+    runner, bb, ollama = make()
+    bb.add("t1", inputs=[str(library)], output=str(tmp_path / "tags.jsonl"))
+
+    def stop_at_three(n: int) -> None:
+        if n == 3:
+            runner.stop.set()
+            raise JobStopped
+
+    ollama.hook = stop_at_three
+    runner.tick()
+    job = runner.store.job("t1")
+    assert job["attempts"] == 0 and job["status"] == "running" and job["done"] == 2
+    assert bb.tasks["t1"]["status"] == "in_progress"
+    assert not {"ultron.retry", "ultron.failed"} & set(bb.actions("t1"))

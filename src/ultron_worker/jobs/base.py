@@ -17,6 +17,10 @@ from ..ollama import Ollama
 KEY_MAX = 1000
 
 
+class JobStopped(Exception):
+    """The runner is shutting down: the job pauses at its last checkpoint (not a failure)."""
+
+
 class JobError(RuntimeError):
     """The job can't go on. ``retryable`` failures get bounded retries, the rest go straight
     to needs_david (a bad spec won't fix itself)."""
