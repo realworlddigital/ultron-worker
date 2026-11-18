@@ -157,6 +157,11 @@ class FakeOllama:
         return [[0.1, 0.2, float(len(t))] for t in texts]
 
 
+@pytest.fixture(autouse=True)
+def _no_budget_grace(monkeypatch) -> None:
+    monkeypatch.setattr("ultron_worker.runner.BUDGET_GRACE", 0)
+
+
 @pytest.fixture
 def library(tmp_path: Path) -> Path:
     lib = tmp_path / "library"

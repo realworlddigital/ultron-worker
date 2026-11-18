@@ -134,8 +134,8 @@ class Store:
     def add_active(self, task_id: str, seconds: float) -> float:
         with self._tx() as db:
             db.execute(
-                "UPDATE jobs SET active_seconds=active_seconds+? WHERE task_id=?",
-                (max(0.0, seconds), task_id),
+                "UPDATE jobs SET active_seconds=MAX(0, active_seconds+?) WHERE task_id=?",
+                (seconds, task_id),
             )
             row = db.execute(
                 "SELECT active_seconds FROM jobs WHERE task_id=?", (task_id,)

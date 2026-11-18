@@ -95,3 +95,37 @@ def test_output_inside_input_folder_is_not_reingested(make, tmp_path) -> None:
            params={"prompt": "Summarise: {text}"})
     runner.tick()
     assert bb.tasks["t1"]["status"] == "done" and len(ollama.calls) == 3
+
+
+def test_active_clock_corrects_a_late_sleep_report(monkeypatch) -> None:
+    from ultron_worker import runner as mod
+
+    class Board:
+        sleep_seconds_total = 0.0
+
+    now = [1000.0]
+    monkeypatch.setattr(mod.time, "time", lambda: now[0])
+    board = Board()
+    clock = mod._ActiveClock(board)
+    now[0] += 3600  # an item spanned a one-hour suspend the watch hasn't reported yet
+    first = clock.lap()
+    board.sleep_seconds_total = 3590.0
+    now[0] += 5
+    assert first + clock.lap() == pytest.approx(15.0)
+
+
+def test_failed_attempt_still_counts_its_active_time(make, library, tmp_path) -> None:
+    import time
+
+    runner, bb, ollama = make()
+    bb.add("t1", inputs=[str(library)], output=str(tmp_path / "tags.jsonl"))
+
+    def slow_then_down(n: int) -> None:
+        time.sleep(0.05)
+        if n == 2:
+            ollama.down = True
+
+    ollama.hook = slow_then_down
+    runner.tick()
+    job = runner.store.job("t1")
+    assert job["status"] == "retry_wait" and job["active_seconds"] >= 0.1

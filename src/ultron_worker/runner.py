@@ -31,6 +31,7 @@ log = logging.getLogger("ultron")
 # (model missing, every file unreadable) rather than "this file is bad".
 BROKEN_AFTER = 5
 WATCH_STEP = 5.0  # sleep-watch granularity, seconds
+BUDGET_GRACE = WATCH_STEP + 1  # lets the watch report a just-ended suspend first
 
 
 class _Stopped(Exception):
@@ -228,52 +229,57 @@ class Runner:
         last_progress = 0.0
         consecutive_failures, successes = 0, 0
         self._progress(tid, done, len(items), None, active)
-        for item in items:
-            if item.key in results:
-                continue
-            if self.stop.is_set():
-                self.store.add_active(tid, clock.lap())
-                raise _Stopped
-            if active > budget_s:
-                raise JobError(
-                    f"wall-clock budget of {spec.budget_minutes:g} min spent after "
-                    f"{done}/{len(items)} items; progress is checkpointed - raise "
-                    f"data.job.budget_minutes and re-dispatch to resume"
-                )
-            self.board.update_current(current_item=item.label)
-            self.store.update_job(tid, current_item=item.label)
-            try:
-                result = kind.run_item(item, spec, ctx)
-                consecutive_failures, successes = 0, successes + 1
-            except ItemFailed as exc:
-                consecutive_failures += 1
-                if successes == 0 and consecutive_failures >= BROKEN_AFTER:
+        try:
+            for item in items:
+                if item.key in results:
+                    continue
+                if self.stop.is_set():
+                    raise _Stopped
+                if active > budget_s and BUDGET_GRACE:
+                    self.stop.wait(BUDGET_GRACE)
+                    active = self.store.add_active(tid, clock.lap())
+                if active > budget_s:
                     raise JobError(
-                        f"first {BROKEN_AFTER} items all failed; last: {exc}", retryable=False
-                    ) from exc
-                result = {"path": item.payload.get("path", item.label), "skipped": str(exc)}
-            done += 1
-            results[item.key] = result
-            self.store.checkpoint(tid, item.key, result, done=done, current_item=item.label)
+                        f"wall-clock budget of {spec.budget_minutes:g} min spent after "
+                        f"{done}/{len(items)} items; progress is checkpointed - raise "
+                        f"data.job.budget_minutes and re-dispatch to resume"
+                    )
+                self.board.update_current(current_item=item.label)
+                self.store.update_job(tid, current_item=item.label)
+                try:
+                    result = kind.run_item(item, spec, ctx)
+                    consecutive_failures, successes = 0, successes + 1
+                except ItemFailed as exc:
+                    consecutive_failures += 1
+                    if successes == 0 and consecutive_failures >= BROKEN_AFTER:
+                        raise JobError(
+                            f"first {BROKEN_AFTER} items all failed; last: {exc}", retryable=False
+                        ) from exc
+                    result = {"path": item.payload.get("path", item.label), "skipped": str(exc)}
+                done += 1
+                results[item.key] = result
+                self.store.checkpoint(tid, item.key, result, done=done, current_item=item.label)
+                active = self.store.add_active(tid, clock.lap())
+                self.board.update_current(done=done, elapsed_s=round(active))
+                if time.monotonic() - last_progress >= self.cfg.progress_seconds:
+                    last_progress = time.monotonic()
+                    self._progress(tid, done, len(items), item.label, active)
+            self.board.update_current(current_item="writing output")
+            ordered: list[tuple[WorkItem, dict[str, Any]]] = [(it, results[it.key]) for it in items]
+            output = kind.finalize(spec, ordered, ctx)
             active = self.store.add_active(tid, clock.lap())
-            self.board.update_current(done=done, elapsed_s=round(active))
-            if time.monotonic() - last_progress >= self.cfg.progress_seconds:
-                last_progress = time.monotonic()
-                self._progress(tid, done, len(items), item.label, active)
-        self.board.update_current(current_item="writing output")
-        ordered: list[tuple[WorkItem, dict[str, Any]]] = [(it, results[it.key]) for it in items]
-        output = kind.finalize(spec, ordered, ctx)
-        active = self.store.add_active(tid, clock.lap())
-        self._progress(tid, done, len(items), None, active)
-        self.store.update_job(
-            tid,
-            status="finished",
-            outputs=output.paths,
-            summary=output.summary,
-            current_item=None,
-            finished_at=now_iso(),
-            error=None,
-        )
+            self._progress(tid, done, len(items), None, active)
+            self.store.update_job(
+                tid,
+                status="finished",
+                outputs=output.paths,
+                summary=output.summary,
+                current_item=None,
+                finished_at=now_iso(),
+                error=None,
+            )
+        finally:
+            self.store.add_active(tid, clock.lap())
 
     def _progress(self, tid: str, done: int, total: int, item: str | None, active: float) -> None:
         pct = round(100.0 * done / total, 1) if total else 0.0
@@ -430,10 +436,12 @@ class _ActiveClock:
         self._wall, self._slept = time.time(), board.sleep_seconds_total
 
     def lap(self) -> float:
+        """Active seconds since the last lap. Negative when the sleep watch reports a suspend
+        that an earlier lap already counted as wall time, so the total corrects itself."""
         wall, slept = time.time(), self.board.sleep_seconds_total
         delta = (wall - self._wall) - (slept - self._slept)
         self._wall, self._slept = wall, slept
-        return max(0.0, delta)
+        return delta
 
 
 def _queue_row(task: dict[str, Any], job: dict[str, Any] | None) -> dict[str, Any]:
