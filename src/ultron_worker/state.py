@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS items (
 );
 """
 
+# Columns added after the first schema: a state DB from an older runner gets them on open.
+MIGRATIONS = (("spec", "TEXT"), ("report_step", "INTEGER NOT NULL DEFAULT 0"))
+
 
 def now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
@@ -56,6 +59,10 @@ class Store:
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA synchronous=FULL")
             self._db.executescript(SCHEMA)
+            have = {r["name"] for r in self._db.execute("PRAGMA table_info(jobs)")}
+            for column, decl in MIGRATIONS:
+                if column not in have:
+                    self._db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {decl}")
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:

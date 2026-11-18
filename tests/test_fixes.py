@@ -193,3 +193,26 @@ def test_report_cut_off_midway_never_posts_twice(make, library, tmp_path) -> Non
     assert bb.tasks["t1"]["status"] == "done"
     assert bb.actions("t1").count("ultron.completed") == 1
     assert len([n for t, n in bb.notes if t == "t1"]) == 1
+
+
+def test_state_db_from_older_runner_gains_new_columns(tmp_path) -> None:
+    import sqlite3
+
+    from ultron_worker.state import Store
+
+    path = tmp_path / "state.db"
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE jobs (task_id TEXT PRIMARY KEY, title TEXT, kind TEXT, model TEXT,"
+        " output TEXT, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,"
+        " done INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0,"
+        " current_item TEXT, active_seconds REAL NOT NULL DEFAULT 0, started_at TEXT,"
+        " finished_at TEXT, updated_at TEXT, error TEXT, outputs TEXT, summary TEXT)"
+    )
+    old.commit()
+    old.close()
+    store = Store(path)
+    job = store.start_job(
+        "t1", title="x", kind="text_batch", model="m", output="o", spec="{}", fresh_dispatch=True
+    )
+    assert job["report_step"] == 0
