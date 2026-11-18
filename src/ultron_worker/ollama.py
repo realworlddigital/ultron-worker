@@ -19,6 +19,10 @@ class OllamaError(RuntimeError):
     """Ollama refused or failed one request (bad model, bad image...)."""
 
 
+class OllamaModelMissing(OllamaError):
+    """The model isn't pulled on this machine: every item would fail, so the job stops."""
+
+
 class OllamaUnavailable(OllamaError):
     """Ollama isn't answering at all: a job-level, retryable failure."""
 
@@ -41,6 +45,11 @@ class Ollama:
                 return json.loads(resp.read() or b"{}")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
+            if exc.code == 404:
+                model = body.get("model")
+                raise OllamaModelMissing(
+                    f"ollama has no model {model!r} ({detail}); run `ollama pull {model}` on Ultron"
+                ) from exc
             raise OllamaError(f"ollama {exc.code}: {detail}") from exc
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
             raise OllamaUnavailable(

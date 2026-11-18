@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ollama import OllamaError, OllamaUnavailable
+from ..ollama import OllamaError, OllamaModelMissing, OllamaUnavailable
 from . import register
 from .base import ItemFailed, JobContext, JobKind, JobSpec, Output, WorkItem
 from .text import finalize_records, item_text, text_items
@@ -20,7 +20,7 @@ class Embeddings(JobKind):
     def run_item(self, item: WorkItem, spec: JobSpec, ctx: JobContext) -> dict[str, Any]:
         try:
             [vector] = ctx.ollama.embed(spec.model, [item_text(item, spec)])
-        except OllamaUnavailable:
+        except (OllamaUnavailable, OllamaModelMissing):
             raise
         except OllamaError as exc:
             raise ItemFailed(str(exc)) from exc

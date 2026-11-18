@@ -96,8 +96,9 @@ class Transcribe(JobKind):
 
     def run_item(self, item: WorkItem, spec: JobSpec, ctx: JobContext) -> dict[str, Any]:
         out_dir = ctx.allowed(spec.output, what="output target")
+        model = self._model(spec, ctx)  # a model that won't load fails the job, not the item
         try:
-            segments, info = self._model(spec, ctx).transcribe(
+            segments, info = model.transcribe(
                 item.payload["path"],
                 language=spec.params.get("language"),
                 beam_size=int(spec.params.get("beam_size", 5)),

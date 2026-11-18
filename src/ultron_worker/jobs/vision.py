@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ..ollama import OllamaError, OllamaUnavailable
+from ..ollama import OllamaError, OllamaModelMissing, OllamaUnavailable
 from . import register
 from .base import (
     ItemFailed,
@@ -109,7 +109,7 @@ class VisionTag(JobKind):
                     json_format=True,
                     options=spec.params.get("options"),
                 )
-            except OllamaUnavailable:
+            except (OllamaUnavailable, OllamaModelMissing):
                 raise
             except OllamaError as exc:
                 raise ItemFailed(str(exc)) from exc

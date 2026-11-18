@@ -28,3 +28,20 @@ def test_symlinked_files_outside_allowed_roots_are_skipped(tmp_path) -> None:
     (root / "dir").symlink_to(outside, target_is_directory=True)
     found = iter_files([str(root)], ctx_for(tmp_path, root), {".png"})
     assert found == [(root / "a.png").resolve()]
+
+
+def test_missing_model_stops_the_job_instead_of_skipping_items(make, library, tmp_path) -> None:
+    from ultron_worker.ollama import OllamaModelMissing
+
+    runner, bb, ollama = make()
+    bb.add("t1", inputs=[str(library)], output=str(tmp_path / "tags.jsonl"))
+
+    def missing(n: int) -> None:
+        raise OllamaModelMissing("ollama has no model 'llava:13b'")
+
+    ollama.hook = missing
+    runner.tick()
+    assert bb.tasks["t1"]["status"] == "needs_david"
+    assert runner.store.item_results("t1") == {}  # nothing checkpointed as skipped
+    assert "ultron.retry" not in bb.actions("t1")
+    assert not (tmp_path / "tags.jsonl").exists()

@@ -22,7 +22,7 @@ from . import __version__, jobs
 from .backbone import Backbone, BackboneError, BackboneUnavailable, ScopeViolation
 from .config import Config
 from .jobs.base import ItemFailed, JobContext, JobError, JobSpec, WorkItem
-from .ollama import Ollama, OllamaUnavailable
+from .ollama import Ollama, OllamaModelMissing, OllamaUnavailable
 from .state import StatusBoard, Store, now_iso
 
 log = logging.getLogger("ultron")
@@ -165,6 +165,8 @@ class Runner:
             return
         except JobError as exc:
             self._fail(tid, str(exc), retryable=exc.retryable)
+        except OllamaModelMissing as exc:
+            self._fail(tid, str(exc), retryable=False)
         except OllamaUnavailable as exc:
             self._fail(tid, str(exc), retryable=True)
         except ScopeViolation as exc:
