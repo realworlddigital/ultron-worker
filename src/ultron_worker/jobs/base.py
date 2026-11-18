@@ -134,9 +134,16 @@ class JobKind:
 
 # ---- helpers shared by the kinds ---------------------------------------------
 def iter_files(
-    inputs: Iterable[str], ctx: JobContext, exts: set[str], *, recursive: bool = True
+    inputs: Iterable[str],
+    ctx: JobContext,
+    exts: set[str],
+    *,
+    recursive: bool = True,
+    exclude: Iterable[Path] = (),
 ) -> list[Path]:
-    """Every file under ``inputs`` with one of ``exts``, sorted, de-duplicated."""
+    """Every file under ``inputs`` with one of ``exts`` (resolved, inside the allowed roots,
+    not in ``exclude``), sorted, de-duplicated."""
+    skip = {os.path.normcase(str(Path(e).resolve(strict=False))) for e in exclude}
     seen: dict[str, Path] = {}
     for raw in inputs:
         p = ctx.allowed(raw, what="input")
@@ -147,8 +154,15 @@ def iter_files(
         else:
             raise JobError(f"input {raw!r} does not exist on this machine")
         for f in candidates:
-            if f.is_file() and f.suffix.lower() in exts:
-                seen.setdefault(os.path.normcase(str(f)), f)
+            if not (f.is_file() and f.suffix.lower() in exts):
+                continue
+            try:
+                real = ctx.allowed(f, what="input")  # a link out of the allowed roots is skipped
+            except JobError:
+                continue
+            key = os.path.normcase(str(real))
+            if key not in skip:
+                seen.setdefault(key, real)
     return [seen[k] for k in sorted(seen)]
 
 
