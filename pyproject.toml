@@ -1,0 +1,38 @@
+[project]
+name = "ultron-worker"
+version = "0.1.0"
+description = "Ultron local job runner: backbone cards routed to local-ultron run on local models (Ollama, faster-whisper) on David's Surface, with a localhost status GUI."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+transcribe = ["faster-whisper>=1.0.0"]
+dev = [
+    "pytest>=8.3.0",
+    "ruff>=0.7.0",
+]
+
+[project.scripts]
+ultron-runner = "ultron_worker.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ultron_worker = ["gui/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ULTRON · local runner</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<canvas id="graph" aria-hidden="true"></canvas>
+<div class="aurora" aria-hidden="true"></div>
+<main class="shell">
+  <header class="top">
+    <div class="brand">
+      <span class="sigil" aria-hidden="true"></span>
+      <div>
+        <div class="eyebrow"><i></i>LOCAL RUNNER / <span id="host">—</span></div>
+        <h1>ULTRON <em>is <span id="activity-word">connecting</span></em></h1>
+      </div>
+    </div>
+    <div class="pills">
+      <span class="pill" id="pill-activity" data-state="connecting"><b></b><span>connecting</span></span>
+      <span class="pill" id="pill-conn" data-state="connecting"><b></b><span>backbone</span></span>
+    </div>
+  </header>
+  <p class="detail" id="runner-detail">Waiting for the runner…</p>
+
+  <section class="panel current" id="current">
+    <div class="eyebrow"><i></i>CURRENT JOB</div>
+    <div id="current-empty" class="empty">Idle — no card routed to Ultron is running.</div>
+    <div id="current-body" hidden>
+      <div class="current-head">
+        <div>
+          <h2 id="cur-title">—</h2>
+          <div class="meta"><span id="cur-id" class="mono"></span> · <span id="cur-kind"></span> · <span id="cur-model" class="mono"></span></div>
+        </div>
+        <div class="ring" id="cur-ring"><svg viewBox="0 0 120 120"><circle class="track" cx="60" cy="60" r="52"/><circle class="arc" id="cur-arc" cx="60" cy="60" r="52"/></svg><span id="cur-pct">0%</span></div>
+      </div>
+      <div class="bar"><div class="fill" id="cur-fill"></div></div>
+      <div class="stats">
+        <div><label>Items</label><span id="cur-items">0 / 0</span></div>
+        <div><label>Elapsed</label><span id="cur-elapsed">0s</span></div>
+        <div><label>Budget</label><span id="cur-budget">—</span></div>
+        <div><label>Attempt</label><span id="cur-attempt">1</span></div>
+      </div>
+      <div class="now"><label>Processing now</label><span id="cur-item" class="mono">—</span></div>
+      <div class="out"><label>Output target</label><span id="cur-output" class="mono">—</span></div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="panel">
+      <div class="eyebrow"><i></i>QUEUE · WAITING FOR ULTRON <span class="count" id="queue-count">0</span></div>
+      <ol id="queue" class="list"></ol>
+      <div id="queue-empty" class="empty">Nothing waiting.</div>
+    </section>
+    <section class="panel">
+      <div class="eyebrow"><i></i>NEEDS ATTENTION <span class="count" id="attn-count">0</span></div>
+      <ul id="attention" class="list"></ul>
+      <div id="attention-empty" class="empty">No failures.</div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <div class="eyebrow"><i></i>RECENTLY DONE</div>
+    <table class="recent"><thead><tr><th>Job</th><th>Finished</th><th>Duration</th><th>Result</th><th>Output</th></tr></thead><tbody id="recent"></tbody></table>
+    <div id="recent-empty" class="empty">No finished jobs yet.</div>
+  </section>
+
+  <footer class="foot">
+    <span>Display only · localhost · closing this tab never touches a job</span>
+    <span id="foot-poll" class="mono"></span>
+  </footer>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
