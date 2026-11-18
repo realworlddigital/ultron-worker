@@ -45,3 +45,18 @@ def test_missing_model_stops_the_job_instead_of_skipping_items(make, library, tm
     assert runner.store.item_results("t1") == {}  # nothing checkpointed as skipped
     assert "ultron.retry" not in bb.actions("t1")
     assert not (tmp_path / "tags.jsonl").exists()
+
+
+def test_transcript_names_unique_ignoring_case(tmp_path) -> None:
+    from ultron_worker.jobs.base import JobSpec
+    from ultron_worker.jobs.transcribe import Transcribe
+
+    (tmp_path / "a").mkdir(), (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "Talk.wav").write_bytes(b"x")
+    (tmp_path / "b" / "talk.wav").write_bytes(b"x")
+    spec = JobSpec.from_card(
+        {"job": {"kind": "transcribe", "inputs": [str(tmp_path)], "model": "m",
+                 "output": str(tmp_path / "out"), "budget_minutes": 5}}
+    )
+    names = [i.payload["name"].casefold() for i in Transcribe().plan(spec, ctx_for(tmp_path, tmp_path))]
+    assert len(names) == 2 and len(set(names)) == 2

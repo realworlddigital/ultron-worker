@@ -70,12 +70,12 @@ class Transcribe(JobKind):
         files = iter_files(
             spec.inputs, ctx, MEDIA_EXTS, recursive=bool(spec.params.get("recursive", True))
         )
-        stems = Counter(f.stem for f in files)
+        stems = Counter(f.stem.casefold() for f in files)  # Windows names ignore case
         items = []
         for f in files:
             name = (
                 f.stem
-                if stems[f.stem] == 1
+                if stems[f.stem.casefold()] == 1
                 else f"{f.stem}-{hashlib.sha1(str(f).encode()).hexdigest()[:8]}"
             )
             items.append(
