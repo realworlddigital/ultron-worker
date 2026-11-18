@@ -148,3 +148,29 @@ def test_shutdown_inside_an_item_is_a_pause_not_an_attempt(make, library, tmp_pa
     assert job["attempts"] == 0 and job["status"] == "running" and job["done"] == 2
     assert bb.tasks["t1"]["status"] == "in_progress"
     assert not {"ultron.retry", "ultron.failed"} & set(bb.actions("t1"))
+
+
+def test_report_cut_off_midway_never_posts_twice(make, library, tmp_path) -> None:
+    from ultron_worker.backbone import BackboneUnavailable
+
+    runner, bb, _ = make()
+    bb.add("t1", inputs=[str(library)], output=str(tmp_path / "tags.jsonl"))
+    real_note, real_transition = bb.note, bb.transition
+    fail = {"note": 1, "transition": 1}
+
+    def flaky(name, real):
+        def call(*a, **kw):
+            if name == "transition" and a[1] != "done":
+                return real(*a, **kw)  # the claim
+            if fail[name]:
+                fail[name] -= 1
+                raise BackboneUnavailable("connection reset")
+            return real(*a, **kw)
+        return call
+
+    bb.note, bb.transition = flaky("note", real_note), flaky("transition", real_transition)
+    for _ in range(3):
+        runner.tick()
+    assert bb.tasks["t1"]["status"] == "done"
+    assert bb.actions("t1").count("ultron.completed") == 1
+    assert len([n for t, n in bb.notes if t == "t1"]) == 1

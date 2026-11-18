@@ -21,6 +21,7 @@ from .base import (
     JobError,
     JobKind,
     JobSpec,
+    JobStopped,
     Output,
     WorkItem,
     atomic_write_text,

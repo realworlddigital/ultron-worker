@@ -325,11 +325,12 @@ class Runner:
     def _report(self, tid: str, job: dict[str, Any]) -> None:
         """Deliver a finished/failed job to the card. Safe to repeat: a report cut off by the
         network is redone on the next tick (the job itself is never rerun)."""
-        try:
-            if job["status"] == "finished":
-                where = ", ".join(job["outputs"]) or "(no output)"
-                minutes = job["active_seconds"] / 60
-                self.bb.event(
+        if job["status"] == "finished":
+            where = ", ".join(job["outputs"]) or "(no output)"
+            minutes = job["active_seconds"] / 60
+            final = "done"
+            calls = [
+                lambda: self.bb.event(
                     "completed",
                     tid,
                     f"Ultron finished {job['title']}: {job['summary']}",
@@ -337,16 +338,18 @@ class Runner:
                     summary=job["summary"],
                     items=job["total"],
                     duration_s=round(job["active_seconds"]),
-                )
-                self.bb.note(
+                ),
+                lambda: self.bb.note(
                     tid,
                     f"Ultron finished: {job['summary']} in {minutes:.1f} min "
                     f"({job['kind']}, {job['model']}). Output: {where}",
-                )
-                self.bb.transition(tid, "done", note=f"Output: {where}")
-                self.store.update_job(tid, status="done")
-            else:
-                self.bb.event(
+                ),
+                lambda: self.bb.transition(tid, "done", note=f"Output: {where}"),
+            ]
+        else:
+            final = "needs_david"
+            calls = [
+                lambda: self.bb.event(
                     "failed",
                     tid,
                     f"Ultron needs David on {job['title']}: {job['error']}",
@@ -355,17 +358,24 @@ class Runner:
                     attempts=job["attempts"],
                     items_done=job["done"],
                     items_total=job["total"],
-                )
-                self.bb.note(
+                ),
+                lambda: self.bb.note(
                     tid,
                     f"Ultron stopped after {job['attempts']} attempt(s), "
                     f"{job['done']}/{job['total']} items checkpointed: "
                     f"{job['error']}\nRe-dispatch the card to resume from the "
                     f"checkpoint.",
                     kind="action",
-                )
-                self.bb.transition(tid, "needs_david", note=job["error"][:500])
-                self.store.update_job(tid, status="needs_david")
+                ),
+                lambda: self.bb.transition(tid, "needs_david", note=job["error"][:500]),
+            ]
+        try:
+            for step, call in enumerate(calls):
+                if step < int(job.get("report_step") or 0):
+                    continue  # delivered before the network dropped: never post it twice
+                call()
+                self.store.update_job(tid, report_step=step + 1)
+            self.store.update_job(tid, status=final)
         except BackboneUnavailable as exc:
             log.warning("report for %s deferred (backbone unreachable): %s", tid, exc)
             self.board.contact(False, f"backbone unreachable: {exc}")
