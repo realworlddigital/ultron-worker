@@ -60,3 +60,24 @@ def test_transcript_names_unique_ignoring_case(tmp_path) -> None:
     )
     names = [i.payload["name"].casefold() for i in Transcribe().plan(spec, ctx_for(tmp_path, tmp_path))]
     assert len(names) == 2 and len(set(names)) == 2
+
+
+def test_changed_model_on_redispatch_starts_over(make, library, tmp_path) -> None:
+    runner, bb, ollama = make()
+    bb.add("t1", inputs=[str(library)], output=str(tmp_path / "tags.jsonl"))
+
+    def die_at_three(n: int) -> None:
+        if n >= 3:
+            ollama.down = True
+
+    ollama.hook = die_at_three
+    for _ in range(4):
+        runner.tick()
+    assert bb.tasks["t1"]["status"] == "needs_david" and runner.store.item_results("t1")
+    ollama.down, ollama.hook = False, None
+    ollama.calls.clear()
+    bb.tasks["t1"]["data"]["job"]["model"] = "qwen2.5vl:7b"
+    bb.tasks["t1"]["status"] = "dispatched"
+    runner.tick()
+    assert bb.tasks["t1"]["status"] == "done"
+    assert len(ollama.calls) == 5 and {c["model"] for c in ollama.calls} == {"qwen2.5vl:7b"}

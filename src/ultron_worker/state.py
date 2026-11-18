@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     current_item TEXT,
     active_seconds REAL NOT NULL DEFAULT 0,
     started_at TEXT, finished_at TEXT, updated_at TEXT,
-    error TEXT, outputs TEXT, summary TEXT
+    error TEXT, outputs TEXT, summary TEXT,
+    spec TEXT,  -- kind/model/params the checkpoints were made with
+    report_step INTEGER NOT NULL DEFAULT 0  -- report calls already delivered
 );
 CREATE TABLE IF NOT EXISTS items (
     task_id TEXT NOT NULL, key TEXT NOT NULL, result TEXT NOT NULL, done_at TEXT NOT NULL,
@@ -77,26 +79,43 @@ class Store:
         return _job(row) if row else None
 
     def start_job(
-        self, task_id: str, *, title: str, kind: str, model: str, output: str, fresh_dispatch: bool
+        self,
+        task_id: str,
+        *,
+        title: str,
+        kind: str,
+        model: str,
+        output: str,
+        spec: str,
+        fresh_dispatch: bool,
     ) -> dict[str, Any]:
         """Open (or reopen) a job row. A fresh dispatch (David moved the card to dispatched,
         first time or after needs_david) resets the attempt count; the item checkpoints stay,
-        so a re-dispatched job resumes where it stopped."""
+        so a re-dispatched job resumes where it stopped - unless its kind, model or params
+        changed, which makes the old results incompatible: then it starts over."""
         ts = now_iso()
         with self._tx() as db:
             row = db.execute("SELECT * FROM jobs WHERE task_id=?", (task_id,)).fetchone()
             if row is None:
                 db.execute(
-                    "INSERT INTO jobs (task_id,title,kind,model,output,status,started_at,"
-                    "updated_at) VALUES (?,?,?,?,?,'running',?,?)",
-                    (task_id, title, kind, model, output, ts, ts),
+                    "INSERT INTO jobs (task_id,title,kind,model,output,spec,status,started_at,"
+                    "updated_at) VALUES (?,?,?,?,?,?,'running',?,?)",
+                    (task_id, title, kind, model, output, spec, ts, ts),
                 )
             else:
                 attempts = 0 if fresh_dispatch else row["attempts"]
+                if row["spec"] != spec:
+                    db.execute("DELETE FROM items WHERE task_id=?", (task_id,))
+                    db.execute(
+                        "UPDATE jobs SET done=0,total=0,active_seconds=0,started_at=? "
+                        "WHERE task_id=?",
+                        (ts, task_id),
+                    )
                 db.execute(
-                    "UPDATE jobs SET title=?,kind=?,model=?,output=?,status='running',attempts=?,"
-                    "error=NULL,finished_at=NULL,updated_at=? WHERE task_id=?",
-                    (title, kind, model, output, attempts, ts, task_id),
+                    "UPDATE jobs SET title=?,kind=?,model=?,output=?,spec=?,status='running',"
+                    "attempts=?,error=NULL,finished_at=NULL,report_step=0,updated_at=? "
+                    "WHERE task_id=?",
+                    (title, kind, model, output, spec, attempts, ts, task_id),
                 )
         job = self.job(task_id)
         assert job is not None

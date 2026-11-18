@@ -13,6 +13,7 @@ spent, path outside allowed_roots) go there at once.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -148,6 +149,11 @@ class Runner:
             kind=str(job_spec.get("kind") or "?"),
             model=str(job_spec.get("model") or "?"),
             output=str(job_spec.get("output") or ""),
+            spec=json.dumps(
+                {k: job_spec.get(k) for k in ("kind", "model", "params")},
+                sort_keys=True,
+                default=str,
+            ),
             fresh_dispatch=fresh,
         )
         self._safe_event(
