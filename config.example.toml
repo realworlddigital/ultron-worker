@@ -1,0 +1,29 @@
+# Ultron runner config. install.ps1 copies this to %ProgramData%\Ultron\config.toml.
+# No secret lives in this file: the runner key is read from the file named below (or the
+# ULTRON_BACKBONE_KEY environment variable). David pastes the key David issued; nobody else.
+
+[backbone]
+url = "https://backbone.example.com"           # David: the backbone API base URL (https only)
+actor = "ultron-runner"                         # the runner's own backbone actor
+domain = "compute"                              # the runner's card domain (never care/household/finance)
+key_file = "%ProgramData%\\Ultron\\runner.key"  # one line: the runner actor's API key
+
+[runner]
+poll_seconds = 60          # a dispatched card starts within one poll
+heartbeat_seconds = 60
+progress_seconds = 60      # progress events to the card at most this often
+max_attempts = 3           # retryable failures, then the card goes to needs_david
+sleep_gap_seconds = 90     # a clock jump longer than this = Ultron was asleep
+state_dir = "%ProgramData%\\Ultron\\state"   # SQLite checkpoints + logs
+# Jobs may only read inputs and write outputs under these folders.
+allowed_roots = ["D:\\Photos", "D:\\Videos", "%USERPROFILE%\\Dropbox"]
+# Extra job-kind modules (each calls ultron_worker.jobs.register); no core change needed.
+job_modules = []
+
+[ollama]
+url = "http://127.0.0.1:11434"   # localhost only; the runner is Ollama's only caller
+
+[gui]
+enabled = true
+host = "127.0.0.1"               # localhost only
+port = 8765                      # http://127.0.0.1:8765/

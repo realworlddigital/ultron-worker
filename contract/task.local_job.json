@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "task.local_job — a batch job routed to a local executor (Ultron), never to Gilfoyle",
+  "type": "object",
+  "required": ["title", "owner", "executor", "job"],
+  "properties": {
+    "title": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "owner": {"type": "string", "minLength": 1},
+    "executor": {"enum": ["local-ultron"]},
+    "initiative_id": {"type": ["string", "null"], "minLength": 1},
+    "blocked": {"type": ["string", "null"], "minLength": 1, "maxLength": 2000},
+    "job": {
+      "type": "object",
+      "required": ["kind", "inputs", "model", "output", "budget_minutes"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1, "description": "A job kind registered on the runner: vision_tag, text_batch, embeddings, transcribe (v1)."},
+        "inputs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "description": "Files/folders on Ultron, under the runner's allowed_roots."},
+        "model": {"type": "string", "minLength": 1, "description": "Ollama model tag (e.g. llava:13b) or faster-whisper model (e.g. large-v3)."},
+        "output": {"type": "string", "minLength": 1, "description": "Output file (.json/.jsonl) or folder (transcribe) on Ultron or its Dropbox."},
+        "budget_minutes": {"type": "number", "exclusiveMinimum": 0, "maximum": 10080, "description": "Per-job wall-clock budget (active time; sleep doesn't count). Set per card; hours/overnight are normal."},
+        "params": {"type": "object", "description": "Kind-specific options (prompt, max_tags, video_frames, language, ...)."}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
