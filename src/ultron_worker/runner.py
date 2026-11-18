@@ -38,6 +38,19 @@ class _Stopped(Exception):
     """Runner shutting down mid-job: leave the card in_progress, keep the checkpoint."""
 
 
+def job_fingerprint(job_spec: dict[str, Any]) -> str:
+    """What the checkpoints depend on; normalised like JobSpec.from_card (no params == {})."""
+    return json.dumps(
+        {
+            "kind": job_spec.get("kind"),
+            "model": job_spec.get("model"),
+            "params": job_spec.get("params") or {},
+        },
+        sort_keys=True,
+        default=str,
+    )
+
+
 class Runner:
     def __init__(
         self,
@@ -150,11 +163,7 @@ class Runner:
             kind=str(job_spec.get("kind") or "?"),
             model=str(job_spec.get("model") or "?"),
             output=str(job_spec.get("output") or ""),
-            spec=json.dumps(
-                {k: job_spec.get(k) for k in ("kind", "model", "params")},
-                sort_keys=True,
-                default=str,
-            ),
+            spec=job_fingerprint(job_spec),
             fresh_dispatch=fresh,
         )
         self._safe_event(

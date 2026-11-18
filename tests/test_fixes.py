@@ -216,3 +216,12 @@ def test_state_db_from_older_runner_gains_new_columns(tmp_path) -> None:
         "t1", title="x", kind="text_batch", model="m", output="o", spec="{}", fresh_dispatch=True
     )
     assert job["report_step"] == 0
+
+
+def test_adding_empty_params_keeps_checkpoints() -> None:
+    from ultron_worker.runner import job_fingerprint
+
+    base = {"kind": "vision_tag", "model": "llava"}
+    assert job_fingerprint(base) == job_fingerprint({**base, "params": {}})
+    assert job_fingerprint(base) == job_fingerprint({**base, "params": None})
+    assert job_fingerprint(base) != job_fingerprint({**base, "params": {"frames": 4}})
