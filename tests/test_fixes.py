@@ -81,3 +81,17 @@ def test_changed_model_on_redispatch_starts_over(make, library, tmp_path) -> Non
     runner.tick()
     assert bb.tasks["t1"]["status"] == "done"
     assert len(ollama.calls) == 5 and {c["model"] for c in ollama.calls} == {"qwen2.5vl:7b"}
+
+
+def test_output_inside_input_folder_is_not_reingested(make, tmp_path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    for i in range(3):
+        (docs / f"d{i}.txt").write_text(f"doc {i}")
+    out = docs / "summaries.jsonl"
+    out.write_text('{"id": "old", "text": "from a previous run"}\n' * 4)
+    runner, bb, ollama = make()
+    bb.add("t1", kind="text_batch", model="qwen2.5:14b", inputs=[str(docs)], output=str(out),
+           params={"prompt": "Summarise: {text}"})
+    runner.tick()
+    assert bb.tasks["t1"]["status"] == "done" and len(ollama.calls) == 3

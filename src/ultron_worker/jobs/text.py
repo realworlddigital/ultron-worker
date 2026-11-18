@@ -35,8 +35,13 @@ def text_items(spec: JobSpec, ctx: JobContext) -> list[WorkItem]:
     id_field = str(spec.params.get("id_field", "id"))
     text_field = str(spec.params.get("text_field", "text"))
     items: list[WorkItem] = []
+    out = ctx.allowed(spec.output, what="output target")
     for f in iter_files(
-        spec.inputs, ctx, TEXT_EXTS, recursive=bool(spec.params.get("recursive", True))
+        spec.inputs,
+        ctx,
+        TEXT_EXTS,
+        recursive=bool(spec.params.get("recursive", True)),
+        exclude=(out,),
     ):
         if f.suffix.lower() != ".jsonl":
             items.append(
