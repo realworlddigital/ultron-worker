@@ -35,6 +35,12 @@ class ItemFailed(RuntimeError):
     the output as skipped with its reason; the job carries on."""
 
 
+class ItemRetry(ItemFailed):
+    """This item's model output was unusable (e.g. a reply that won't parse even after a
+    repair re-ask). Checkpointed as ``failed``, never as a result: the job finishes its pass,
+    then the runner's retry/resume re-runs just these items on a later attempt."""
+
+
 @dataclass(frozen=True)
 class JobSpec:
     kind: str
@@ -134,6 +140,11 @@ class JobKind:
         self, spec: JobSpec, results: list[tuple[WorkItem, dict[str, Any]]], ctx: JobContext
     ) -> Output:
         raise NotImplementedError
+
+    def settled(self, result: dict[str, Any]) -> bool:
+        """Whether a checkpointed result is final. Unsettled ones (marked ``failed``) are
+        re-run when the job resumes."""
+        return "failed" not in result
 
 
 # ---- helpers shared by the kinds ---------------------------------------------

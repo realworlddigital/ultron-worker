@@ -56,6 +56,14 @@ it up. Inputs and outputs must sit under `runner.allowed_roots` (Dropbox include
    retryable errors (e.g. Ollama down). After that, or right away for a bad spec, an unknown kind
    or a path outside the allowed roots, the card goes to **`needs_david`** with the error in an
    `ultron.failed` event and an action note. Re-dispatching it resumes from the checkpoint.
+
+   **vision_tag replies** are parsed strictly: a record needs a non-empty `caption` and a JSON
+   array of `tags` (generic people, setting and mood words such as `man`, `one person`,
+   `indoor`, `serious` are dropped). A reply that doesn't parse gets one repair re-ask; if that
+   fails too, the item is checkpointed as `failed` (the output line carries only `path` and
+   `failed`, never caption/tags) and the job ends its pass with a retryable error, so the next
+   attempt re-runs just those items. Still failing after `max_attempts`, the card goes to
+   `needs_david`; re-dispatching retries them again.
 6. **Offline / asleep.** Cards just stay in `dispatched`, visibly, on the board. Ultron's
    heartbeat stops. They start on the first poll after it wakes. If the backbone is unreachable in
    the middle of a job, the job keeps running locally and reports when the backbone is back.

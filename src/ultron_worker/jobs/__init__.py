@@ -9,7 +9,7 @@ from __future__ import annotations
 import importlib
 from importlib.metadata import entry_points
 
-from .base import JobContext, JobError, JobKind, JobSpec, Output, WorkItem
+from .base import ItemRetry, JobContext, JobError, JobKind, JobSpec, Output, WorkItem
 
 _REGISTRY: dict[str, JobKind] = {}
 BUILTIN = (
@@ -44,6 +44,7 @@ def load(extra_modules: tuple[str, ...] | list[str] = ()) -> list[str]:
 
 
 __all__ = [
+    "ItemRetry",
     "JobContext",
     "JobError",
     "JobKind",
