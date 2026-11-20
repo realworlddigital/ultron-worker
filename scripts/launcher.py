@@ -12,7 +12,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "Ultron"
+# install.ps1 builds Ultron.exe into the install root (which -Root may move): use our own folder.
+_HERE = Path(sys.executable).parent if getattr(sys, "frozen", False) else None
+ROOT = (
+    _HERE
+    if _HERE and (_HERE / "install.json").is_file()
+    else Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "Ultron"
+)
 FLAGS = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
     subprocess, "CREATE_NEW_PROCESS_GROUP", 0
 )
