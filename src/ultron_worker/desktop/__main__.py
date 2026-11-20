@@ -12,12 +12,13 @@ import logging
 import logging.handlers
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from .autostart import Autostart, WinRunKey
 from .controller import App
 from .instance import SingleInstance
-from .layout import Install, RunnerSettings, default_root
+from .layout import Install, RunnerSettings, default_root, venv_python
 from .server import ShellServer
 from .ui import DesktopUI
 
@@ -52,6 +53,19 @@ def _icon(root: Path) -> Path | None:
     return None
 
 
+def active_python(install: Install) -> Path | None:
+    """The active venv's pythonw if this process runs from another venv (an old shortcut or Run
+    key after an update), so the app always runs the installed code; else None."""
+    if not install.data.get("venv"):
+        return None
+    with contextlib.suppress(OSError):
+        if install.venv.resolve() == Path(sys.prefix).resolve():
+            return None
+        exe = venv_python(install.venv, windowed=True)
+        return exe if exe.is_file() else None
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="ultron", description=__doc__)
     ap.add_argument("--root", type=Path, default=default_root(), help="the Ultron install folder")
@@ -65,6 +79,14 @@ def main(argv: list[str] | None = None) -> int:
 
     install = Install(args.root, args.config)
     _logging(RunnerSettings.read(install.config).state_dir)
+    exe = None if os.environ.pop("ULTRON_REEXEC", None) else active_python(install)
+    if exe is not None:
+        log.info("switching to the active install: %s", exe)
+        argv_ = sys.argv[1:] if argv is None else argv
+        env = {**os.environ, "ULTRON_REEXEC": "1"}
+        cmd = [str(exe), "-m", "ultron_worker.desktop", *argv_]
+        subprocess.Popen(cmd, creationflags=DETACHED, close_fds=True, env=env)
+        return 0
     lock = SingleInstance()
     # After an update the old app may take a moment to exit and free the lock.
     if not lock.acquire(wait=60 if args.updated else 0):

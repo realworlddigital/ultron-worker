@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from ultron_worker.desktop.__main__ import active_python
 from ultron_worker.desktop.autostart import Autostart, command_line
 from ultron_worker.desktop.controller import tail
 from ultron_worker.desktop.instance import SingleInstance
@@ -308,3 +309,16 @@ def test_tail_reads_the_end(tmp_path) -> None:
     lines = tail(log, max_bytes=2000, max_lines=50)
     assert lines[-1] == "line 4999" and len(lines) == 50
     assert tail(tmp_path / "missing.log") == []
+
+
+def test_app_moves_to_the_active_venv(tmp_path: Path) -> None:
+    inst = Install(tmp_path)
+    assert active_python(inst) is None  # no install.json: run as is
+    inst.save(venv=sys.prefix)
+    assert active_python(inst) is None  # already on the active venv
+    new = tmp_path / "venvs" / "abc"
+    exe = new / ("Scripts/pythonw.exe" if sys.platform == "win32" else "bin/python")
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    inst.save(venv=str(new))
+    assert active_python(inst) == exe  # an old shortcut/venv: switch to the updated install
