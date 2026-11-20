@@ -1,4 +1,4 @@
-"""``ultron-runner --config config.toml [--no-gui] [--once] [--check]``."""
+"""``ultron-runner --config config.toml [--no-gui] [--once] [--check] [--stop-on-stdin-close]``."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import logging
 import logging.handlers
 import signal
 import sys
+import threading
 
 from . import __version__, jobs
 from .config import ConfigError, load
@@ -36,6 +37,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="validate config, key identity, Ollama and job kinds, then exit",
     )
+    ap.add_argument(
+        "--stop-on-stdin-close",
+        action="store_true",
+        help="stop cleanly (at the checkpoint) when stdin closes: the desktop app owns the runner",
+    )
     args = ap.parse_args(argv)
     try:
         cfg = load(args.config)
@@ -63,8 +69,20 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _stop)
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _stop)
+    if args.stop_on_stdin_close:
+        threading.Thread(target=_stop_on_eof, args=(_stop,), name="stdin", daemon=True).start()
     runner.run_forever()
     return 0
+
+
+def _stop_on_eof(stop) -> None:  # type: ignore[no-untyped-def]
+    """Windows has no console signal for a windowless child: the owner closes our stdin."""
+    try:
+        while sys.stdin.buffer.read(4096):
+            pass
+    except (OSError, ValueError, AttributeError):
+        pass
+    stop()
 
 
 def _check(runner: Runner) -> int:

@@ -8,6 +8,12 @@ dependencies = []
 
 [project.optional-dependencies]
 transcribe = ["faster-whisper>=1.0.0"]
+# The desktop app (python -m ultron_worker.desktop / Ultron.exe): WebView2 window + tray icon.
+desktop = [
+    "pywebview>=5.1",
+    "pystray>=0.19.5",
+    "Pillow>=10.3",
+]
 dev = [
     "pytest>=8.3.0",
     "ruff>=0.7.0",
@@ -24,7 +30,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-ultron_worker = ["gui/static/*"]
+ultron_worker = ["gui/static/*", "desktop/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

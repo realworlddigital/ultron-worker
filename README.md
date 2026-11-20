@@ -70,7 +70,7 @@ it up. Inputs and outputs must sit under `runner.allowed_roots` (Dropbox include
 
 ## Status GUI
 
-Open **http://127.0.0.1:8765/** on Ultron. It shows the runner state, the current job (card title
+The desktop app shows it in its window; it is also at **http://127.0.0.1:8765/**. It shows the runner state, the current job (card title
 and id, kind, model, percent, items done/total, elapsed time against the budget, the file being
 processed and the output target), the queue in order, Recently Done (when it finished, how long it
 took, where the output landed) and failures needing attention. Values update live every 1.5 s.
@@ -90,30 +90,55 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1            # add -T
 ```
 
 This installs into `%ProgramData%\Ultron\venv` and creates `%ProgramData%\Ultron\config.toml` from
-[`config.example.toml`](config.example.toml). It also creates an empty, user-only `runner.key`.
-Then:
+[`config.example.toml`](config.example.toml). It also creates an empty, user-only `runner.key` and
+builds the desktop app, `%ProgramData%\Ultron\Ultron.exe`, with a Start Menu shortcut (**Ultron**).
+Quit the app from its tray icon before re-running the installer by hand. Then:
 
 1. **Key (David only).** Paste the `ultron-runner` key you issued into
    `%ProgramData%\Ultron\runner.key`. Nothing in this repo creates, stores or sends a key anywhere
-   else.
+   else, and the app never displays it.
 2. **Config.** Set `backbone.url` and `runner.allowed_roots` (the photo, video and Dropbox folders).
 3. **Models.** For example `ollama pull llava:13b`, `ollama pull nomic-embed-text`.
 4. **Check.**
-   `& "$env:ProgramData\Ultron\venv\Scripts\ultron-runner.exe" --config "$env:ProgramData\Ultron\config.toml" --check`
+   `& "$env:ProgramData\Ultron\ultron-runner.cmd" --config "$env:ProgramData\Ultron\config.toml" --check`
    This confirms the key's identity, shows the queue, probes Ollama and lists the job kinds.
-5. **Run it as a service (your approval).** Re-run the installer with `-RegisterTask` to register
-   the **Ultron Runner** Scheduled Task. It starts at logon, runs on battery, restarts on failure
-   and has no time limit. Start it now with `Start-ScheduledTask 'Ultron Runner'`.
-   You can also run the `ultron-runner` command from step 4 without `--check` in a terminal.
+5. **Run it.** Start **Ultron** from the Start Menu and tick **Start Ultron when I sign in**.
 
-Logs: `%ProgramData%\Ultron\state\ultron.log`. Uninstall: `Unregister-ScheduledTask 'Ultron Runner'`
-and delete `%ProgramData%\Ultron`.
+Logs: `%ProgramData%\Ultron\state\ultron.log`. Uninstall: untick autostart, quit from the tray and
+delete `%ProgramData%\Ultron`.
 
-**Acceptance run.** File a `vision_tag` card on a small folder. Within one poll it shows in the GUI
-as the current job, with live progress and the file being processed. Kill the runner partway
-(`Stop-ScheduledTask`), start it again, and it resumes with no duplicate lines in `tags.jsonl`.
-When it finishes, the card is `done` with an `ultron.completed` event and the job shows in Recently
-Done with its output path.
+## Desktop app
+
+`Ultron.exe` is a pywebview window (the built-in WebView2, no Electron) around the runner. The app
+starts the runner as its child and owns it:
+
+- **Controls.** Start, Stop and Restart. Stop and Quit close the runner's stdin, so it stops at its
+  next checkpoint exactly like Ctrl+C. A runner that crashes is restarted with a backoff.
+- **Health lights.** Backbone identity, queue and Ollama, from the runner's own `--check`. They
+  refresh after every start, every 10 minutes, and when you press **Run --check**.
+- **Status and log.** The existing status GUI (unchanged) in the middle, and a live tail of
+  `ultron.log` below it.
+- **Tray.** Closing the window hides it to the tray and the runner keeps working. The tray menu has
+  Open, Restart runner and Quit (stops the runner cleanly). Launching Ultron again just brings the
+  window back.
+- **Autostart.** The toggle writes `HKCU\...\CurrentVersion\Run\Ultron` (per user, no admin). It
+  replaces the old **Ultron Runner** Scheduled Task, which the installer now removes if present
+  (`-RegisterTask` is retired).
+- **Updates.** On launch and on **Check for updates**, the app compares the installed commit with
+  `origin/main` and shows both short SHAs and subjects. Nothing updates without your click. If a job
+  is running, **Update** waits for it to finish (or **Update now**: checkpointing resumes the job).
+  It fast-forwards the checkout, builds a fresh venv in `venvs\<sha>`, and runs `--check` there.
+  Only then does it stop the runner and restart the app on the new install, which shows
+  **Updated to &lt;sha&gt;**. If any step fails, the previous install keeps running untouched.
+
+The app serves its control page on a random loopback port. Its controls need a per-launch token, and
+it proxies only GETs to the read-only status GUI. `install.json` records the repo, active venv and
+installed commit. `ultron-runner.cmd` always points at the active venv.
+
+**Acceptance run.** File a `vision_tag` card on a small folder. Within one poll it shows in the app
+as the current job, with live progress and the file being processed. Press **Stop** partway, press
+**Start**, and it resumes with no duplicate lines in `tags.jsonl`. When it finishes, the card is
+`done` with an `ultron.completed` event and the job shows in Recently Done with its output path.
 
 ## Development
 
