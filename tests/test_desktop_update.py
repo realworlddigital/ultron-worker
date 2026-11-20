@@ -123,3 +123,13 @@ def test_pull_refuses_other_branch(repos) -> None:
     sh(clone, "checkout", "-q", "-b", "experiment")
     with pytest.raises(UpdateError, match="experiment"):
         update.pull(clone, new)
+
+
+def test_pull_refuses_local_commits_past_the_target(repos) -> None:
+    up, clone = repos
+    new = commit(up, "b.txt", "second")
+    update.git(clone, "fetch", "-q", "origin", "main")
+    update.git(clone, "merge", "-q", "--ff-only", new)
+    commit(clone, "c.txt", "local only")
+    with pytest.raises(UpdateError, match="local commits"):
+        update.pull(clone, new)

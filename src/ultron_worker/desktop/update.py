@@ -143,6 +143,12 @@ def pull(repo: Path, target_sha: str, *, branch: str = BRANCH) -> None:
     if git(repo, "status", "--porcelain", "--untracked-files=no"):
         raise UpdateError(f"the checkout at {repo} has local changes: commit or discard them")
     git(repo, "merge", "--ff-only", "--quiet", target_sha)
+    head_sha = git(repo, "rev-parse", "HEAD")
+    if head_sha != target_sha:  # local commits beyond the target: we'd install something else
+        raise UpdateError(
+            f"the checkout at {repo} is at {head_sha[:7]}, past {target_sha[:7]} "
+            "(local commits): reset it to origin/main or re-run install.ps1"
+        )
 
 
 def _run(cmd: list[str], log: Callable[[str], None], timeout: float) -> subprocess.CompletedProcess:
