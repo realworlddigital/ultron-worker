@@ -104,8 +104,20 @@ class App:
             if time.monotonic() >= self._next_health and not self.checking:
                 self.check_health_async()
 
+    def updating(self) -> bool:
+        return bool(self.job) and self.job["phase"] in (
+            "starting",
+            "waiting",
+            "building",
+            "switching",
+        )
+
     def _prune(self) -> None:
-        with contextlib.suppress(OSError):
+        # Under the lock, so start_update can't begin mid-prune; skipped while an update's new
+        # venv (not in install.json yet) is being built.
+        with self._lock, contextlib.suppress(OSError):
+            if self.updating():
+                return
             for path in self.install.prune_venvs():
                 log.info("removed old venv %s", path)
 
@@ -297,6 +309,8 @@ class App:
     # ---- the control page --------------------------------------------------------
     def status(self) -> dict[str, Any]:
         rstate = self.runner_state() if self.runner.running() or self.external_runner else None
+        if self.external_runner and rstate is None and not self.runner.running():
+            self.external_runner = False  # the outside runner went away: Start works again
         h = self.health
         return {
             "runner": {

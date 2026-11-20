@@ -151,3 +151,24 @@ def test_no_update_without_a_check(tmp_path: Path) -> None:
     app = make_app(tmp_path, None)
     app.update_status = update.UpdateStatus("equal")
     assert app.start_update(force=False)["ok"] is False
+
+
+def test_prune_spares_an_update_in_flight(tmp_path: Path) -> None:
+    app = make_app(tmp_path, None)
+    building = tmp_path / "venvs" / TARGET.short
+    building.mkdir(parents=True)
+    app.job = {"phase": "building"}
+    app._prune()
+    assert building.is_dir()
+    app.job = {"phase": "failed"}
+    app._prune()
+    assert not building.exists()
+
+
+def test_start_is_offered_again_once_an_outside_runner_stops(tmp_path: Path) -> None:
+    app = make_app(tmp_path, None)
+    app.runner.alive = False
+    app.external_runner = True
+    app.runner_state = lambda: None  # type: ignore[method-assign]
+    app.runner.status = lambda: {"state": "stopped"}  # type: ignore[attr-defined]
+    assert app.status()["runner"]["external"] is False
