@@ -179,3 +179,24 @@ def test_garbage_checkpointed_by_an_older_runner_is_rerun(make, library, tmp_pat
     assert bb.tasks["t1"]["status"] == "done"
     assert len(_calls_for(ollama, "a")) == 1 and len(ollama.calls) == 5
     assert all(is_tag_record(r) and r["caption"] for r in _lines(out))
+
+
+def test_retry_pass_of_many_failed_items_is_not_treated_as_a_broken_job(
+    make, library, tmp_path
+) -> None:
+    from .conftest import PNG
+
+    for i in range(5):  # sort before the scripted failures, so attempt 1 has successes
+        (library / f"0{i}.png").write_bytes(PNG)
+    bad = ["a", "b", "c", "d", "e"]
+    ollama = ScriptedOllama({s: [GARBAGE["plain_prose"]] * 4 for s in bad})
+    runner, bb, _ = make(ollama=ollama)
+    out = tmp_path / "tags.jsonl"
+    bb.add("t1", inputs=[str(library)], output=str(out))
+    runner.tick()
+    runner.tick()  # retry pass: all five fail again, back to back, with no success this run
+    job = runner.store.job("t1")
+    assert job["status"] == "retry_wait" and "5 item(s) failed" in job["error"]
+    runner.tick()
+    assert bb.tasks["t1"]["status"] == "done"
+    assert all(is_tag_record(r) for r in _lines(out)) and len(_lines(out)) == 10

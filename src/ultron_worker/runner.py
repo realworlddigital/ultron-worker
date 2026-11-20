@@ -261,7 +261,8 @@ class Runner:
                     consecutive_failures, successes = 0, successes + 1
                 except ItemFailed as exc:
                     consecutive_failures += 1
-                    if successes == 0 and consecutive_failures >= BROKEN_AFTER:
+                    retry_pass = isinstance(exc, ItemRetry) and done > 0  # not a broken job
+                    if successes == 0 and consecutive_failures >= BROKEN_AFTER and not retry_pass:
                         raise JobError(
                             f"first {BROKEN_AFTER} items all failed; last: {exc}", retryable=False
                         ) from exc
