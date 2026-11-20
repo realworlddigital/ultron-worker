@@ -6,9 +6,10 @@ runs item by item, committing each item's result before the next; progress event
 ``progress_seconds``. The job itself never needs the network: if the backbone is down mid-job
 the job carries on and its completion is reported on the next tick that reaches it.
 
-Failures are bounded: retryable ones (Ollama down, unexpected errors) get ``max_attempts``
-tries, then the card goes to needs_david with the error; non-retryable ones (bad spec, budget
-spent, path outside allowed_roots) go there at once.
+Failures are bounded: retryable ones (Ollama down, unexpected errors, items whose model output
+stayed unusable - only those items are re-run) get ``max_attempts`` tries, then the card goes to
+needs_david with the error; non-retryable ones (bad spec, budget spent, path outside
+allowed_roots) go there at once.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from typing import Any
 from . import __version__, jobs
 from .backbone import Backbone, BackboneError, BackboneUnavailable, ScopeViolation
 from .config import Config
-from .jobs.base import ItemFailed, JobContext, JobError, JobSpec, JobStopped, WorkItem
+from .jobs.base import ItemFailed, ItemRetry, JobContext, JobError, JobSpec, JobStopped, WorkItem
 from .ollama import Ollama, OllamaModelMissing, OllamaUnavailable
 from .state import StatusBoard, Store, now_iso
 
@@ -213,7 +214,7 @@ class Runner:
         if not items:
             raise JobError("the job found nothing to process in its inputs")
         results = self.store.item_results(tid)
-        done = sum(1 for it in items if it.key in results)
+        done = sum(1 for it in items if it.key in results and kind.settled(results[it.key]))
         self.store.update_job(tid, total=len(items), done=done)
         budget_s = spec.budget_minutes * 60
         self.board.set_current(
@@ -240,7 +241,7 @@ class Runner:
         self._progress(tid, done, len(items), None, active)
         try:
             for item in items:
-                if item.key in results:
+                if item.key in results and kind.settled(results[item.key]):
                     continue
                 if self.stop.is_set():
                     raise _Stopped
@@ -264,8 +265,10 @@ class Runner:
                         raise JobError(
                             f"first {BROKEN_AFTER} items all failed; last: {exc}", retryable=False
                         ) from exc
-                    result = {"path": item.payload.get("path", item.label), "skipped": str(exc)}
-                done += 1
+                    what = "failed" if isinstance(exc, ItemRetry) else "skipped"
+                    result = {"path": item.payload.get("path", item.label), what: str(exc)}
+                if kind.settled(result):
+                    done += 1
                 results[item.key] = result
                 self.store.checkpoint(tid, item.key, result, done=done, current_item=item.label)
                 active = self.store.add_active(tid, clock.lap())
@@ -278,6 +281,15 @@ class Runner:
             output = kind.finalize(spec, ordered, ctx)
             active = self.store.add_active(tid, clock.lap())
             self._progress(tid, done, len(items), None, active)
+            failed = [(it, r) for it, r in ordered if not kind.settled(r)]
+            if failed:
+                first, why = failed[0][0].label, failed[0][1].get("failed", "unusable result")
+                raise JobError(
+                    f"{len(failed)} item(s) failed and are retried from the checkpoint on the "
+                    f"next attempt (first: {first}: {why}); output so far, with them marked "
+                    f"failed: {', '.join(output.paths) or '(none)'}",
+                    retryable=True,
+                )
             self.store.update_job(
                 tid,
                 status="finished",

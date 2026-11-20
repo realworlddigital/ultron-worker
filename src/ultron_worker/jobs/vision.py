@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from ..ollama import OllamaError, OllamaModelMissing, OllamaUnavailable
 from . import register
 from .base import (
     ItemFailed,
+    ItemRetry,
     JobContext,
     JobError,
     JobKind,
@@ -36,37 +38,117 @@ VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm", ".wmv", ".mts"}
 PROMPT = (
     "You are cataloging a personal photo and video library. Look at the image(s) - for a video "
     "they are frames sampled in order - and reply with JSON only, exactly: "
-    '{{"caption": "<one plain sentence>", "tags": ["<keyword>", ...]}}. '
-    "Tags are short lowercase keywords: subjects, number of people, setting, activity, objects, "
-    "colors, mood, and any visible text. At most {max_tags} tags."
+    '{{"caption": "<one specific sentence>", "tags": ["<keyword>", ...]}}. '
+    "The caption says concretely who is doing what, with what, where; copy any readable text "
+    "(signs, logos, shirts, screens) exactly. "
+    "Tags are short lowercase keywords for concrete things only: objects, activities, equipment, "
+    "clothing, animals, specific places, and any readable text. Give as many as truly apply, up "
+    "to {max_tags}. Never tag generic people words (man, woman, person, one person, people) - "
+    "tag what they are doing or holding instead; never tag setting filler (indoor, outdoor) or "
+    "mood/quality words (serious, focus, happy, calm)."
+)
+REPAIR = (
+    "\n\nYour previous reply could not be used ({reason}); it began: {previous}. Reply again "
+    "with ONE JSON object only - no prose, no code fence - exactly "
+    '{{"caption": "<one specific sentence>", "tags": ["<keyword>", ...]}}, where "caption" is '
+    'a non-empty sentence and "tags" is a JSON array of short keyword strings.'
 )
 FRAME_SIDE = 768
 SUBPROCESS_TIMEOUT = 300
+CAPTION_MAX = 600
+TAG_MAX = 40
+TAG_MAX_WORDS = 5
+TAG_JUNK = set('{}[]":\\\n\t')
+# Dropped whatever the prompt says: they describe nearly every frame, so they find nothing.
+FILLER_TAGS = frozenset(
+    {
+        # generic people descriptors
+        "man", "men", "woman", "women", "person", "persons", "people", "human", "humans",
+        "adult", "adults", "guy", "guys", "individual", "someone", "group of people",
+        # setting filler
+        "indoor", "indoors", "outdoor", "outdoors", "inside", "outside", "interior",
+        "exterior", "background", "foreground", "scene", "setting",
+        # mood / quality words
+        "serious", "focus", "focused", "focusing", "concentration", "concentrated", "calm",
+        "happy", "happiness", "joy", "joyful", "mood", "emotion", "emotional", "casual",
+        "relaxed", "excited", "excitement", "energetic", "peaceful", "cozy", "beautiful",
+        "nice", "candid", "blurry", "blur", "blurred", "quality",
+    }
+)  # fmt: skip
+_PEOPLE_COUNT = re.compile(
+    r"(a|one|single|two|three|four|five|six|several|many|multiple|few|\d+)\s+"
+    r"(person|persons|people|man|men|woman|women|adults?|individuals?)"
+)
+
+
+class TagParseError(ValueError):
+    """The model's reply isn't a usable {"caption", "tags"} record."""
+
+
+def _clean_tag(tag: str) -> str | None:
+    t = " ".join(tag.split()).strip("#\"'.,;!? ").lower()
+    if (
+        not t
+        or len(t) > TAG_MAX
+        or len(t.split()) > TAG_MAX_WORDS
+        or TAG_JUNK & set(t)
+        or t in FILLER_TAGS
+        or _PEOPLE_COUNT.fullmatch(t)
+    ):
+        return None
+    return t
+
+
+def _json_object(raw: str) -> dict[str, Any]:
+    start = raw.find("{")  # models sometimes wrap the JSON in prose or a code fence
+    if start < 0:
+        raise TagParseError("no JSON object in the reply")
+    try:
+        doc, _ = json.JSONDecoder().raw_decode(raw, start)
+    except ValueError as exc:
+        raise TagParseError(f"reply is not valid JSON: {getattr(exc, 'msg', exc)}") from exc
+    if not isinstance(doc, dict):
+        raise TagParseError("reply is not a JSON object")
+    return doc
 
 
 def parse_tags(raw: str, max_tags: int) -> tuple[str, list[str]]:
-    caption, tags = "", []
-    start, end = raw.find("{"), raw.rfind("}")
-    if start > 0 and end > start:  # models sometimes wrap the JSON in prose
-        raw = raw[start : end + 1]
-    try:
-        doc = json.loads(raw)
-        if isinstance(doc, dict):
-            caption = str(doc.get("caption") or "").strip()
-            raw_tags = doc.get("tags") or []
-            tags = (
-                [str(t) for t in raw_tags]
-                if isinstance(raw_tags, list)
-                else str(raw_tags).split(",")
-            )
-    except ValueError:
-        tags = raw.replace("\n", ",").split(",")
-    out: list[str] = []
-    for t in tags:
-        t = t.strip().strip("#\"'").lower()
-        if t and t not in out and len(t) <= 60:
-            out.append(t)
-    return caption, out[:max_tags]
+    """Strictly parse a reply into (caption, tags); raise :class:`TagParseError` unless it holds
+    a non-empty caption and a JSON array with at least one usable tag. Never falls back to
+    treating the raw text as tags."""
+    doc = _json_object(raw)
+    caption = doc.get("caption")
+    if not isinstance(caption, str) or not caption.strip():
+        raise TagParseError('"caption" is missing or empty')
+    caption = " ".join(caption.split())
+    if len(caption) > CAPTION_MAX or caption.startswith(("{", "[")) or '"tags"' in caption:
+        raise TagParseError('"caption" is not a plain sentence')
+    raw_tags = doc.get("tags")
+    if not isinstance(raw_tags, list):
+        raise TagParseError(f'"tags" is {type(raw_tags).__name__}, not a JSON array')
+    tags: list[str] = []
+    for t in raw_tags:
+        clean = _clean_tag(t) if isinstance(t, str) else None
+        if clean and clean not in tags:
+            tags.append(clean)
+    if not tags:
+        raise TagParseError('"tags" has no usable keywords')
+    return caption, tags[:max_tags]
+
+
+def is_tag_record(result: dict[str, Any]) -> bool:
+    """A checkpointed result is a well-formed tag record (or an explicit skip)."""
+    if "skipped" in result:
+        return True
+    caption, tags = result.get("caption"), result.get("tags")
+    return (
+        "failed" not in result
+        and isinstance(caption, str)
+        and bool(caption.strip())
+        and isinstance(tags, list)
+        and bool(tags)
+        and all(isinstance(t, str) and t and len(t) <= 60 and not TAG_JUNK & set(t) for t in tags)
+    )
 
 
 class VisionTag(JobKind):
@@ -101,23 +183,22 @@ class VisionTag(JobKind):
                 images = self._frames(path, scratch, int(spec.params.get("video_frames", 4)))
             else:
                 images = [self._image(path, scratch)]
+            raw = self._ask(spec, ctx, prompt, images)
             try:
-                raw = ctx.ollama.generate(
-                    spec.model,
-                    prompt,
-                    images=images,
-                    json_format=True,
-                    options=spec.params.get("options"),
+                caption, tags = parse_tags(raw, max_tags)
+            except TagParseError as first:
+                previous = json.dumps(" ".join(raw.split())[:200])
+                raw = self._ask(
+                    spec, ctx, prompt + REPAIR.format(reason=first, previous=previous), images
                 )
-            except (OllamaUnavailable, OllamaModelMissing):
-                raise
-            except OllamaError as exc:
-                raise ItemFailed(str(exc)) from exc
+                try:
+                    caption, tags = parse_tags(raw, max_tags)
+                except TagParseError as exc:
+                    raise ItemRetry(
+                        f"unusable model reply after a repair re-ask: {first}; then {exc}"
+                    ) from exc
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
-        caption, tags = parse_tags(raw, max_tags)
-        if not tags and not caption:
-            raise ItemFailed("model returned no tags")
         result: dict[str, Any] = {
             "path": str(path),
             "media": item.payload["media"],
@@ -127,6 +208,23 @@ class VisionTag(JobKind):
         if item.payload["media"] == "video":
             result["frames"] = len(images)
         return result
+
+    def settled(self, result: dict[str, Any]) -> bool:
+        return is_tag_record(result)  # also re-runs garbage checkpointed by an older runner
+
+    def _ask(self, spec: JobSpec, ctx: JobContext, prompt: str, images: list[Path]) -> str:
+        try:
+            return ctx.ollama.generate(
+                spec.model,
+                prompt,
+                images=images,
+                json_format=True,
+                options=spec.params.get("options"),
+            )
+        except (OllamaUnavailable, OllamaModelMissing):
+            raise
+        except OllamaError as exc:
+            raise ItemFailed(str(exc)) from exc
 
     def _image(self, path: Path, scratch: Path) -> Path:
         try:
@@ -207,8 +305,10 @@ class VisionTag(JobKind):
         out = ctx.allowed(spec.output, what="output target")
         if out.is_dir():
             raise JobError(f"output target {str(out)!r} is a folder; name a .json/.jsonl file")
-        tagged = [r for _, r in results if "skipped" not in r]
-        skipped = [r for _, r in results if "skipped" in r]
+        records = [r if is_tag_record(r) else _failed(r) for _, r in results]
+        skipped = [r for r in records if "skipped" in r]
+        failed = [r for r in records if "failed" in r]
+        tagged = [r for r in records if "skipped" not in r and "failed" not in r]
         write_records(
             out,
             {
@@ -218,10 +318,21 @@ class VisionTag(JobKind):
                 "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
                 "tagged": len(tagged),
                 "skipped": len(skipped),
+                "failed": len(failed),
             },
-            [r for _, r in results],
+            records,
         )
-        return Output(paths=[str(out)], summary=f"{len(tagged)} tagged, {len(skipped)} skipped")
+        summary = f"{len(tagged)} tagged, {len(skipped)} skipped"
+        if failed:
+            summary += f", {len(failed)} failed"
+        return Output(paths=[str(out)], summary=summary)
+
+
+def _failed(result: dict[str, Any]) -> dict[str, Any]:
+    """The only shape an unusable result reaches the output in: path + reason, no tags."""
+    reason = result.get("failed") or "malformed result from an earlier run"
+    out = {"path": result.get("path"), "media": result.get("media"), "failed": str(reason)}
+    return {k: v for k, v in out.items() if v is not None}
 
 
 register(VisionTag())
