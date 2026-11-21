@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ultron-token" content="{{TOKEN}}">
+<title>Ultron</title>
+<link rel="stylesheet" href="/__ultron/shell.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><span class="sigil" aria-hidden="true"></span><b>ULTRON</b></div>
+  <div class="lights" id="lights">
+    <span class="light" id="light-runner" data-state="unknown" title=""><i></i><em>Runner</em><span>—</span></span>
+    <span class="light" id="light-backbone" data-state="unknown" title=""><i></i><em>Backbone</em><span>—</span></span>
+    <span class="light" id="light-queue" data-state="unknown" title=""><i></i><em>Queue</em><span>—</span></span>
+    <span class="light" id="light-ollama" data-state="unknown" title=""><i></i><em>Ollama</em><span>—</span></span>
+    <button class="ghost small" id="btn-check" title="Run ultron-runner --check now">Re-check</button>
+  </div>
+  <div class="controls">
+    <button id="btn-start">Start</button>
+    <button id="btn-stop">Stop</button>
+    <button id="btn-restart">Restart</button>
+  </div>
+</header>
+
+<div class="banner" id="flash" hidden><span id="flash-text"></span><button class="ghost small" id="btn-dismiss">Dismiss</button></div>
+<div class="banner warn" id="external" hidden>A runner started outside the app is already running, so the app didn't start its own. Stop that one (close its PowerShell window, or <code>Stop-ScheduledTask 'Ultron Runner'</code>), then press Start.</div>
+
+<section class="banner update" id="update-panel" hidden>
+  <div class="update-row">
+    <div>
+      <div class="eyebrow">UPDATE AVAILABLE <span id="update-count"></span></div>
+      <div class="versions">
+        <span class="ver"><em>installed</em> <code id="cur-sha">—</code> <span id="cur-subject"></span></span>
+        <span class="arrow">→</span>
+        <span class="ver"><em>available</em> <code id="new-sha">—</code> <span id="new-subject"></span></span>
+      </div>
+    </div>
+    <button class="primary" id="btn-update">Update</button>
+  </div>
+  <div class="confirm" id="busy-confirm" hidden>
+    <p>A job is running: <b id="busy-what"></b>. Updating restarts the runner; the job pauses at its checkpoint and resumes on the new version.</p>
+    <button class="primary" id="btn-update-idle">Update when it finishes</button>
+    <button id="btn-update-now">Update now</button>
+    <button class="ghost" id="btn-update-back">Not now</button>
+  </div>
+</section>
+
+<section class="banner job" id="job-panel" hidden>
+  <div class="update-row">
+    <div><div class="eyebrow">UPDATING TO <code id="job-sha"></code></div><div id="job-phase"></div></div>
+    <div><button id="btn-job-now" hidden>Update now</button> <button class="ghost" id="btn-job-cancel" hidden>Cancel</button> <button class="ghost" id="btn-job-dismiss" hidden>Dismiss</button></div>
+  </div>
+  <pre class="joblog" id="job-log"></pre>
+</section>
+
+<main class="view">
+  <iframe id="status" src="/" title="Ultron runner status"></iframe>
+</main>
+
+<section class="logpane" id="logpane">
+  <div class="logbar">
+    <div class="eyebrow">LOG <span class="path" id="log-path"></span></div>
+    <label class="follow"><input type="checkbox" id="follow" checked> follow</label>
+    <button class="ghost small" id="btn-log-toggle">Hide</button>
+  </div>
+  <pre id="log"></pre>
+</section>
+
+<footer class="foot">
+  <label class="toggle"><input type="checkbox" id="autostart"> <span>Start Ultron when I sign in</span></label>
+  <span id="installed"></span>
+  <span class="grow"></span>
+  <span id="update-state"></span>
+  <button class="ghost small" id="btn-update-check">Check for updates</button>
+</footer>
+<script src="/__ultron/shell.js"></script>
+</body>
+</html>
