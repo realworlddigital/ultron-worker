@@ -15,9 +15,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import health, update
+from . import health, update, winenv
 from .autostart import Autostart
-from .layout import Install, RunnerSettings, now_iso, venv_python
+from .layout import Install, RunnerSettings, now_iso, repo_head, venv_python
 from .supervisor import RunnerProcess
 
 log = logging.getLogger("ultron.desktop")
@@ -67,8 +67,9 @@ class App:
         self.relaunch = relaunch
         self.runner = RunnerProcess(
             install.runner_command,
-            stderr_path=self.settings.state_dir / "ultron-runner.stderr.log",
-            cwd=install.root if install.root.is_dir() else None,
+            output_path=self.settings.state_dir / "ultron-runner.output.log",
+            cwd=self.child_cwd(),
+            env=self.child_env,
         )
         self._lock = threading.Lock()
         self.health: health.HealthReport | None = None
@@ -81,9 +82,29 @@ class App:
         self.external_runner = False
         self._stop = threading.Event()
         self._next_health = 0.0
+        self.backfill_sha()
         if updated_to:
             sha = install.sha or updated_to
             self.flash = {"kind": "ok", "text": f"Updated to {sha[:7]}"}
+
+    def child_env(self) -> dict[str, str]:
+        """What the runner and its --check get: the user's environment with a fresh PATH and
+        the active venv's Scripts first (as an activated venv in PowerShell has it)."""
+        return winenv.child_env(prepend=[venv_python(self.install.venv).parent])
+
+    def child_cwd(self) -> Path | None:
+        return self.install.root if self.install.root.is_dir() else None
+
+    def backfill_sha(self) -> None:
+        """An install recorded without its commit (git wasn't found at install time) takes the
+        clone's HEAD, which is what install.ps1 installed, so the footer isn't 'unknown'."""
+        if self.install.sha or self.install.repo is None:
+            return
+        sha = repo_head(self.install.repo)
+        if sha:
+            log.info("install.json had no installed commit; using the clone's HEAD %s", sha[:7])
+            with contextlib.suppress(OSError):
+                self.install.save(sha=sha, sha_source="repo HEAD")
 
     # ---- lifecycle ----------------------------------------------------------
     def start(self, *, start_runner: bool = True) -> None:
@@ -174,7 +195,9 @@ class App:
 
         def run() -> None:
             try:
-                self.health = health.run_check(self.install.runner_command())
+                self.health = health.run_check(
+                    self.install.runner_command(), env=self.child_env(), cwd=self.child_cwd()
+                )
             finally:
                 self.checking = False
 
@@ -190,6 +213,7 @@ class App:
         def run() -> None:
             try:
                 self.install.reload()
+                self.backfill_sha()
                 self.update_status = update.check(self.install.repo, self.install.sha)
             finally:
                 self.checking_update = False
@@ -335,6 +359,7 @@ class App:
                 "repo": str(self.install.repo) if self.install.repo else None,
             },
             "log": tail(self.settings.log_path),
+            "output": self.runner.output(),
             "log_path": str(self.settings.log_path),
         }
 

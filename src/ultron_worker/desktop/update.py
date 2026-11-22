@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import winenv
 from .layout import NO_WINDOW, Install, now_iso, venv_python
 
 REMOTE, BRANCH = "origin", "main"
@@ -81,19 +82,23 @@ class UpdateStatus:
 
 
 def git(repo: Path, *args: str, timeout: float = 120) -> str:
+    exe = winenv.git_exe()
+    if exe is None:
+        raise UpdateError(winenv.GIT_NOT_FOUND)
     try:
         proc = subprocess.run(
-            ["git", "-C", str(repo), *args],
+            [exe, "-C", str(repo), *args],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
             stdin=subprocess.DEVNULL,
+            env=winenv.child_env(),  # git's helpers (ssh, credential manager) need the full PATH
             creationflags=NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise UpdateError(f"git {args[0]}: {exc}") from exc
+        raise UpdateError(f"git {args[0]} ({exe}): {exc}") from exc
     if proc.returncode != 0:
         raise UpdateError(f"git {' '.join(args)}: {(proc.stderr or proc.stdout).strip()}")
     return proc.stdout.strip()

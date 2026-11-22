@@ -37,6 +37,9 @@ class FakeRunner:
     def poll(self, now: float | None = None) -> None:
         pass
 
+    def output(self) -> list[str]:
+        return []
+
 
 def wait_for(cond: Callable[[], bool], timeout: float = 5) -> None:
     end = time.monotonic() + timeout
@@ -172,3 +175,21 @@ def test_start_is_offered_again_once_an_outside_runner_stops(tmp_path: Path) -> 
     app.runner_state = lambda: None  # type: ignore[method-assign]
     app.runner.status = lambda: {"state": "stopped"}  # type: ignore[attr-defined]
     assert app.status()["runner"]["external"] is False
+
+
+def test_install_without_a_recorded_commit_takes_the_clones_head(tmp_path: Path) -> None:
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (["init", "-q", "-b", "main"], ["commit", "-q", "--allow-empty", "-m", "x"]):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=repo, check=True
+        )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    inst = Install(tmp_path / "Ultron")
+    inst.save(repo=str(repo), venv=str(tmp_path / "venv"), sha=None)
+    App(inst, autostart=Autostart(["x"], None))
+    assert inst.sha == head and Install(tmp_path / "Ultron").sha == head  # persisted

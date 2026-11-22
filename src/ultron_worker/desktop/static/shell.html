@@ -15,6 +15,7 @@
     <span class="light" id="light-backbone" data-state="unknown" title=""><i></i><em>Backbone</em><span>—</span></span>
     <span class="light" id="light-queue" data-state="unknown" title=""><i></i><em>Queue</em><span>—</span></span>
     <span class="light" id="light-ollama" data-state="unknown" title=""><i></i><em>Ollama</em><span>—</span></span>
+    <span class="light" id="light-check" data-state="warn" title="" hidden><i></i><em>Check</em><span>unavailable</span></span>
     <button class="ghost small" id="btn-check" title="Run ultron-runner --check now">Re-check</button>
   </div>
   <div class="controls">
@@ -25,6 +26,7 @@
 </header>
 
 <div class="banner" id="flash" hidden><span id="flash-text"></span><button class="ghost small" id="btn-dismiss">Dismiss</button></div>
+<div class="banner bad" id="runner-failed" hidden><span><b>The runner will not start</b> (exited <span id="runner-failed-code"></span>, <span id="runner-failed-tries"></span> tries): <span id="runner-failed-why"></span> &mdash; see the log below, fix it, then press Start.</span></div>
 <div class="banner warn" id="external" hidden>A runner started outside the app is already running, so the app didn't start its own. Stop that one (close its PowerShell window, or <code>Stop-ScheduledTask 'Ultron Runner'</code>), then press Start.</div>
 
 <section class="banner update" id="update-panel" hidden>

@@ -4,15 +4,21 @@ Stop closes the child's stdin (``--stop-on-stdin-close``), so the runner pauses 
 checkpoint exactly as it does on Ctrl+C; only if it hasn't exited within ``stop_timeout`` is it
 killed, which checkpointing also survives. If the shell itself dies, the pipe closes and the
 runner stops with it, so a relaunched shell never finds an orphan runner polling beside its own.
+
+The child's stdout and stderr are captured (and appended to ``output_path``): a runner that dies
+before it opens its own log still shows why in the app. A crashed runner is revived with a
+backoff a few times; if it keeps crashing the supervisor gives up (``failed``) until Start.
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import subprocess
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import IO, Any
@@ -20,7 +26,12 @@ from typing import IO, Any
 from .layout import NO_WINDOW, now_iso
 
 log = logging.getLogger("ultron.desktop.runner")
-BACKOFF = (5, 15, 30, 60, 120, 300)  # seconds before reviving a crashed runner, then capped
+BACKOFF = (5, 15, 45)  # seconds before each revival; after these the supervisor gives up
+STABLE_SECONDS = 300.0  # a runner up this long before crashing starts a fresh run of retries
+OUTPUT_LINES = 200
+OUTPUT_FILE_MAX = 2_000_000
+# Lines the runner's logging writes to stdout: they are in ultron.log already.
+LOG_LINE = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+ (DEBUG|INFO|WARNING|ERROR|CRITICAL) ")
 
 
 class RunnerProcess:
@@ -28,17 +39,23 @@ class RunnerProcess:
         self,
         command: Callable[[], list[str]],
         *,
-        stderr_path: Path | None = None,
+        output_path: Path | None = None,
         stop_timeout: float = 90.0,
         cwd: Path | None = None,
+        env: Callable[[], dict[str, str]] | None = None,
     ) -> None:
         self.command = command
-        self.stderr_path = stderr_path
+        self.output_path = output_path
         self.stop_timeout = stop_timeout
         self.cwd = cwd
+        self.env = env
         self._lock = threading.RLock()
         self._proc: subprocess.Popen | None = None
-        self._stderr: IO[bytes] | None = None
+        self._out_file: IO[str] | None = None
+        self._reader: threading.Thread | None = None
+        self._output: deque[str] = deque(maxlen=OUTPUT_LINES)  # the latest run's own output
+        self._started_mono = 0.0
+        self.gave_up = False
         self.wanted = False  # David's intent: should a runner be up?
         self.started_at: str | None = None
         self.exit_code: int | None = None
@@ -60,6 +77,8 @@ class RunnerProcess:
         with self._lock:
             self.wanted = True
             self._revive_at = None
+            if self.gave_up:  # David pressed Start: a fresh run of retries
+                self.gave_up, self.crashes = False, 0
             if self.running():
                 return False
             self._spawn()
@@ -67,19 +86,71 @@ class RunnerProcess:
 
     def _spawn(self) -> None:
         cmd = [*self.command(), "--stop-on-stdin-close"]
-        if self.stderr_path:
-            self.stderr_path.parent.mkdir(parents=True, exist_ok=True)
-            self._stderr = open(self.stderr_path, "ab")  # noqa: SIM115 (kept open for the child)
+        self._output.clear()
+        self._open_output()
         log.info("starting runner: %s", " ".join(cmd))
-        self._proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,  # the runner logs to ultron.log already
-            stderr=self._stderr or subprocess.DEVNULL,
-            cwd=self.cwd,
-            creationflags=NO_WINDOW,
-        )
         self.started_at, self.exit_code, self.exited_at = now_iso(), None, None
+        self._started_mono = time.monotonic()
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                cwd=self.cwd,
+                env=self.env() if self.env else None,
+                creationflags=NO_WINDOW,
+            )
+        except (OSError, ValueError) as exc:  # the exe or cwd is missing: a crash, with a reason
+            self._proc = None
+            self._note(f"could not start the runner: {exc}")
+            self.exit_code, self.exited_at = None, now_iso()
+            self._close_output()
+            self._crashed(time.monotonic())
+            return
+        self._reader = threading.Thread(
+            target=self._read, args=(self._proc,), name="runner-output", daemon=True
+        )
+        self._reader.start()
+
+    def _open_output(self) -> None:
+        if not self.output_path:
+            return
+        try:
+            self.output_path.parent.mkdir(parents=True, exist_ok=True)
+            if self.output_path.is_file() and self.output_path.stat().st_size > OUTPUT_FILE_MAX:
+                self.output_path.unlink()
+            self._out_file = open(self.output_path, "a", encoding="utf-8")  # noqa: SIM115
+            self._out_file.write(f"--- runner start {now_iso()}\n")
+            self._out_file.flush()
+        except OSError as exc:  # the in-app copy still works
+            log.warning("can't write runner output to %s: %s", self.output_path, exc)
+            self._out_file = None
+
+    def _note(self, line: str) -> None:
+        self._output.append(line)
+        if self._out_file is not None:
+            with contextlib.suppress(OSError, ValueError):
+                self._out_file.write(line + "\n")
+                self._out_file.flush()
+
+    def _read(self, proc: subprocess.Popen) -> None:
+        assert proc.stdout is not None
+        with contextlib.suppress(OSError, ValueError):
+            for raw in iter(proc.stdout.readline, b""):
+                self._note(raw.decode("utf-8", "replace").rstrip("\r\n"))
+
+    def _close_output(self) -> None:
+        if self._out_file is not None:
+            with contextlib.suppress(OSError):
+                self._out_file.close()
+            self._out_file = None
+
+    def output(self, *, include_log_lines: bool = False) -> list[str]:
+        """The latest run's stdout/stderr (tracebacks, startup errors). Log-formatted lines are
+        left out unless asked for: the log pane shows them from ultron.log already."""
+        lines = list(self._output)
+        return lines if include_log_lines else [ln for ln in lines if not LOG_LINE.match(ln)]
 
     def stop(self, timeout: float | None = None) -> str:
         """Stop and wait. Returns ``"clean"``, ``"killed"`` or ``"not running"``."""
@@ -89,6 +160,7 @@ class RunnerProcess:
             proc = self._proc
             if proc is None or proc.poll() is not None:
                 self._reap()
+                self.crashes, self.gave_up = 0, False
                 return "not running"
             self.stopping = True
             try:
@@ -104,7 +176,7 @@ class RunnerProcess:
                     proc.wait(30)
                     how = "killed"
                 self._reap()
-                self.crashes = 0
+                self.crashes, self.gave_up = 0, False
                 return how
             finally:
                 self.stopping = False
@@ -118,10 +190,27 @@ class RunnerProcess:
         if self._proc is not None and self._proc.poll() is not None:
             self.exit_code, self.exited_at = self._proc.returncode, now_iso()
             self._proc = None
-        if self._stderr is not None and self._proc is None:
-            with contextlib.suppress(OSError):
-                self._stderr.close()
-            self._stderr = None
+            if self._reader is not None:
+                self._reader.join(5)  # the last words a crashing runner wrote
+                self._reader = None
+        if self._proc is None:
+            self._close_output()
+
+    def _crashed(self, now: float) -> None:
+        if time.monotonic() - self._started_mono >= STABLE_SECONDS:
+            self.crashes = 0  # it ran fine for a while: this is a new problem
+        if self.crashes >= len(BACKOFF):
+            self.gave_up, self._revive_at = True, None
+            log.error(
+                "runner exited with code %s %s times in a row; not restarting it (see the log)",
+                self.exit_code,
+                self.crashes + 1,
+            )
+            return
+        delay = BACKOFF[self.crashes]
+        self.crashes += 1
+        self._revive_at = now + delay
+        log.error("runner exited with code %s; restarting in %ss", self.exit_code, delay)
 
     def poll(self, now: float | None = None) -> None:
         """Called periodically: notice a crash and revive the runner with backoff."""
@@ -132,12 +221,7 @@ class RunnerProcess:
             if self._proc is not None and self._proc.poll() is not None:
                 self._reap()
                 if self.wanted:
-                    delay = BACKOFF[min(self.crashes, len(BACKOFF) - 1)]
-                    self.crashes += 1
-                    self._revive_at = now + delay
-                    log.error(
-                        "runner exited with code %s; restarting in %ss", self.exit_code, delay
-                    )
+                    self._crashed(now)
             revive = self._revive_at
             if self.wanted and self._proc is None and revive is not None and now >= revive:
                 self._revive_at = None
@@ -148,6 +232,8 @@ class RunnerProcess:
             running = self.running()
             if running:
                 state = "stopping" if self.stopping else "running"
+            elif self.wanted and self.gave_up:
+                state = "failed"  # kept crashing: not retried until Start
             elif self.wanted and self._revive_at is not None:
                 state = "crashed"
             else:
@@ -160,4 +246,6 @@ class RunnerProcess:
                 "exit_code": self.exit_code,
                 "exited_at": self.exited_at,
                 "restart_in": revive,
+                "crashes": self.crashes,
+                "max_restarts": len(BACKOFF),
             }
