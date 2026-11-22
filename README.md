@@ -37,6 +37,18 @@ A card's `data`:
 `budget_minutes` is the job's wall-clock budget. It counts active time only, so sleep doesn't use
 it up. Inputs and outputs must sit under `runner.allowed_roots` (Dropbox included if you list it).
 
+**Media roots (NAS-swap-proof paths).** Each `runner.allowed_roots` entry is also a named media
+root, named after its final folder (`\\GUILD-NAS\GUILD-RAW-Media` is `GUILD-RAW-Media`); an
+optional `[media_roots]` table (`name = "base path"`) overrides or adds names. Inputs, outputs
+and `params.merge` take an absolute path or the `ROOT/relative/...` form, e.g.
+`"GUILD-RAW-Media/Guild Hall/September"`; either way the resolved path must sit under the allowed
+roots. Every `vision_tag` record is keyed by `root` + `relpath` (forward slashes); its absolute
+`path` is kept for debugging only. When the NAS moves, point the root at the new base and the
+index still resolves. Index records from older runners that carry only an absolute `path` are
+normalized on read when the path is under a known root. `params.merge` (a list of earlier index
+files) merges them into this job's output, one record per `root` + `relpath`; this pass wins,
+except that a failed or skipped record never replaces a tagged one.
+
 ## How a job runs
 
 1. **Poll.** Every `poll_seconds` (60 by default) the runner lists its `in_progress` cards first

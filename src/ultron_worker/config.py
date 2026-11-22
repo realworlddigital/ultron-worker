@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .media import MediaRoots
+
 # The card contract (docs/backbone-contract.md). Gilfoyle's intake only routes task.dev_build,
 # and the runner only takes this type with this executor.
 TASK_TYPE = "task.local_job"
@@ -55,6 +57,8 @@ class Config:
     max_attempts: int = 3
     state_dir: Path = Path(".ultron")
     allowed_roots: tuple[Path, ...] = ()
+    # [media_roots] name -> base path; empty = derived from allowed_roots (see media.py).
+    media_roots: tuple[tuple[str, str], ...] = ()
     job_modules: tuple[str, ...] = ()
     ollama_url: str = "http://127.0.0.1:11434"
     gui_enabled: bool = True
@@ -65,6 +69,9 @@ class Config:
 
     def __post_init__(self) -> None:
         validate(self)
+
+    def roots(self) -> MediaRoots:
+        return MediaRoots.build(dict(self.media_roots), self.allowed_roots)
 
     @property
     def db_path(self) -> Path:
@@ -87,6 +94,10 @@ def validate(cfg: Config) -> None:
         raise ConfigError("runner.max_attempts must be at least 1")
     if not cfg.allowed_roots:
         raise ConfigError("runner.allowed_roots must list the folders jobs may read and write")
+    try:
+        cfg.roots()
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def _read_key(section: dict) -> str:
@@ -105,6 +116,9 @@ def load(path: str | os.PathLike[str]) -> Config:
     with open(path, "rb") as fh:
         raw = tomllib.load(fh)
     bb, run = raw.get("backbone", {}), raw.get("runner", {})
+    media = raw.get("media_roots", {})
+    if not isinstance(media, dict) or not all(isinstance(v, str) for v in media.values()):
+        raise ConfigError("[media_roots] must map root names to base paths (strings)")
     oll, gui = raw.get("ollama", {}), raw.get("gui", {})
     try:
         backbone_url = str(bb["url"]).rstrip("/")
@@ -122,6 +136,7 @@ def load(path: str | os.PathLike[str]) -> Config:
         sleep_gap_seconds=float(run.get("sleep_gap_seconds", 90)),
         state_dir=Path(_expand(str(run.get("state_dir", ".ultron")))),
         allowed_roots=tuple(Path(_expand(str(p))) for p in run.get("allowed_roots", [])),
+        media_roots=tuple((str(k), _expand(v)) for k, v in media.items()),
         job_modules=tuple(str(m) for m in run.get("job_modules", [])),
         ollama_url=str(oll.get("url", "http://127.0.0.1:11434")).rstrip("/"),
         gui_enabled=bool(gui.get("enabled", True)),

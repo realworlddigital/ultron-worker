@@ -20,6 +20,12 @@ allowed_roots = ["D:\\Photos", "D:\\Videos", "%USERPROFILE%\\Dropbox"]
 # Extra job-kind modules (each calls ultron_worker.jobs.register); no core change needed.
 job_modules = []
 
+# Optional: name -> base path of the media roots tag records are keyed by (root + relative path,
+# so the index survives a NAS swap). Without this table each allowed_roots entry is a root named
+# after its final folder, e.g. "\\\\GUILD-NAS\\GUILD-RAW-Media" -> GUILD-RAW-Media.
+# [media_roots]
+# GUILD-RAW-Media = "\\\\GUILD-NAS\\GUILD-RAW-Media"
+
 [ollama]
 url = "http://127.0.0.1:11434"   # localhost only; the runner is Ollama's only caller
 
