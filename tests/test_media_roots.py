@@ -212,3 +212,26 @@ def test_bad_merge_param_goes_to_needs_david(make, library, tmp_path) -> None:
     runner.tick()
     assert bb.tasks["t1"]["status"] == "needs_david"
     assert bb.tasks["t2"]["status"] == "needs_david"
+
+
+def test_root_names_differing_only_in_case_are_not_merged() -> None:
+    roots = MediaRoots.build(None, ["D:\\Photos", "E:\\photos", "/srv/Videos"])
+    assert roots.roots == {"Videos": "/srv/Videos"}  # ambiguous derived names left out
+    with pytest.raises(ValueError, match="differ only in case"):
+        MediaRoots({"Photos": "D:\\Photos", "photos": "E:\\photos"})
+
+
+def test_case_sensitive_roots_keep_case_variant_files_apart() -> None:
+    # A Windows mapping next to a POSIX root: only the Windows root compares without case.
+    roots = MediaRoots({"Raw": NAS, "Local": "/srv/Local"})
+    local = [
+        {"path": "/srv/Local/A.jpg", "tags": ["a"]},
+        {"path": "/srv/Local/a.jpg", "tags": ["b"]},
+    ]
+    assert len(roots.merge(local)) == 2
+    nas = [
+        {"path": NAS + "\\A.jpg", "tags": ["a"]},
+        {"path": NAS.lower() + "\\a.jpg", "tags": ["b"]},
+    ]
+    assert [r["tags"] for r in roots.merge(nas)] == [["b"]]
+    assert roots.relativize("/srv/local/A.jpg") is None  # POSIX prefix match keeps case

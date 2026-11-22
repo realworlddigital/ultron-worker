@@ -27,6 +27,11 @@ def _windowsy(path: str) -> bool:
     return "\\" in path or bool(_DRIVE.match(path))
 
 
+def _folds(path: str) -> bool:
+    """Whether paths under ``path`` compare case-insensitively (Windows, drive or UNC paths)."""
+    return os.name == "nt" or _windowsy(path)
+
+
 def is_absolute(path: str) -> bool:
     return path.startswith(("/", "\\")) or bool(_DRIVE.match(path)) or os.path.isabs(path)
 
@@ -60,11 +65,18 @@ class MediaRoots:
 
     def __init__(self, roots: Mapping[str, str]) -> None:
         self.roots: dict[str, str] = {}
+        seen: dict[str, str] = {}
         for name, base in roots.items():
             if not valid_name(name):
                 raise ValueError(f"media root name {name!r} must be a plain folder-style name")
+            if name.casefold() in seen:
+                raise ValueError(
+                    f"media root names {seen[name.casefold()]!r} and {name!r} differ only in case"
+                )
+            seen[name.casefold()] = name
             self.roots[name] = _expand(str(base))
-        self.casefold = os.name == "nt" or any(_windowsy(b) for b in self.roots.values())
+        # Case-insensitive per root: Windows/UNC bases fold, POSIX bases (on POSIX) don't.
+        self.folds = {n: _folds(b) for n, b in self.roots.items()}
 
     @classmethod
     def build(
@@ -74,25 +86,27 @@ class MediaRoots:
         names (a derived name two allowed roots share is ambiguous and left out)."""
         roots = dict(explicit or {})
         covered = {cls._key_for(str(b)) for b in roots.values()}
-        derived: dict[str, list[str]] = {}
+        taken = {n.casefold() for n in roots}
+        derived: dict[str, list[tuple[str, str]]] = {}  # names that differ only in case collide
         for base in allowed_roots:
             b = str(base)
             name = root_name(b)
             if name and cls._key_for(b) not in covered:
-                derived.setdefault(name, []).append(b)
-        for name, bases in derived.items():
-            if len(bases) == 1 and name not in roots and valid_name(name):
-                roots[name] = bases[0]
+                derived.setdefault(name.casefold(), []).append((name, b))
+        for folded, found in derived.items():
+            if len(found) == 1 and folded not in taken and valid_name(found[0][0]):
+                roots[found[0][0]] = found[0][1]
         return cls(roots)
 
     @staticmethod
     def _key_for(path: str) -> str:
         n = _norm(_expand(path))
-        return n.casefold() if os.name == "nt" or _windowsy(path) else n
+        return n.casefold() if _folds(path) else n
 
-    def _cmp(self, path: str) -> str:
+    @staticmethod
+    def _cmp(path: str, fold: bool) -> str:
         n = _norm(path)
-        return n.casefold() if self.casefold else n
+        return n.casefold() if fold else n
 
     def _bases(self, name: str) -> list[str]:
         base = self.roots[name]
@@ -110,21 +124,21 @@ class MediaRoots:
     def lookup(self, name: str) -> str | None:
         if name in self.roots:
             return name
-        if self.casefold:
-            for n in self.roots:
-                if n.casefold() == name.casefold():
-                    return n
+        for n in self.roots:  # names are unique ignoring case
+            if n.casefold() == name.casefold():
+                return n
         return None
 
     def relativize(self, path: str | os.PathLike[str]) -> tuple[str, str] | None:
         """``(root, relpath)`` for an absolute path under a known root (longest match), else
         None. ``relpath`` keeps the path's own spelling, with forward slashes."""
         p = str(path)
-        target = self._cmp(p)
         best: tuple[int, str, str] | None = None
         for name in self.roots:
+            fold = self.folds[name]
+            target = self._cmp(p, fold)
             for base in self._bases(name):
-                b = self._cmp(base)
+                b = self._cmp(base, fold)
                 under = target == b or target.startswith(b.rstrip("/") + "/")
                 if under and (best is None or len(b) > best[0]):
                     rel = "/".join(_parts(_norm(p))[len(_parts(b)) :])
@@ -176,10 +190,12 @@ class MediaRoots:
         a record outside every root falls back to its absolute path."""
         rec = self.normalize(record)
         if "root" in rec:
-            root, rel = str(rec["root"]), str(rec["relpath"])
-        else:
-            root, rel = "", _norm(str(rec.get("path") or ""))
-        return (root.casefold(), rel.casefold()) if self.casefold else (root, rel)
+            name = self.lookup(str(rec["root"]))
+            root, rel = (name or str(rec["root"])), str(rec["relpath"])
+            fold = self.folds[name] if name else os.name == "nt"
+            return (root, rel.casefold() if fold else rel)
+        path = str(rec.get("path") or "")
+        return ("", self._cmp(path, _folds(path)))
 
     def absolute(self, record: dict[str, Any]) -> str | None:
         """Where the record's file is now: derived from root + relpath, else its stored path."""
