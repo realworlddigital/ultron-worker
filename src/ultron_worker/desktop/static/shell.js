@@ -71,13 +71,18 @@
     $("btn-check").textContent = s.checking ? "Checking…" : "Re-check";
   }
 
+  function installedLabel(i) {
+    const v = i.version ? `v${i.version}` : "version unknown";
+    return `installed ${v} · ${i.sha ? i.sha.slice(0, 7) : "commit unknown"}`;
+  }
+
   function renderUpdate(s) {
     const u = s.update, job = s.job;
     const active = job && !["failed", "cancelled"].includes(job.phase);
     $("update-panel").hidden = !(u && u.can_update) || !!active;
     if (u && u.can_update) {
       const [cs, csub] = commit(u.current), [ns, nsub] = commit(u.available);
-      $("cur-sha").textContent = cs; $("cur-subject").textContent = csub || (u.error || "");
+      $("cur-sha").textContent = s.installed.version ? `v${s.installed.version} · ${cs}` : cs; $("cur-subject").textContent = csub || (u.error || "");
       $("new-sha").textContent = ns; $("new-subject").textContent = nsub;
       $("update-count").textContent = u.behind ? `· ${u.behind} commit${u.behind === 1 ? "" : "s"}` : "";
     }
@@ -143,7 +148,7 @@
     const a = $("autostart");
     a.disabled = !s.autostart.supported;
     if (document.activeElement !== a) a.checked = s.autostart.enabled;
-    $("installed").textContent = s.installed.sha ? `installed ${s.installed.sha.slice(0, 7)}` : "installed version unknown";
+    $("installed").textContent = installedLabel(s.installed);
   }
 
   async function poll() {

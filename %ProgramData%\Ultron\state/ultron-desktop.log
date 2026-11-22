@@ -1,0 +1,13 @@
+2026-11-22 07:22:21,657 INFO ultron.desktop Ultron app (pid 13408) at http://127.0.0.1:46693/__ultron/
+2026-11-22 07:22:21,659 INFO ultron.desktop.runner starting runner: /home/ubuntu/repos/ultron-worker/.venv/bin/python -m ultron_worker --config /tmp/ur/config.toml --stop-on-stdin-close
+2026-11-22 07:22:21,661 WARNING ultron.desktop.ui tray icon unavailable
+Traceback (most recent call last):
+  File "/home/ubuntu/repos/ultron-worker/src/ultron_worker/desktop/ui.py", line 137, in _start_tray
+    import pystray
+ModuleNotFoundError: No module named 'pystray'
+2026-11-22 07:22:21,668 WARNING ultron.desktop.ui no tray icon available: Ctrl+C (or the window's Quit) stops Ultron
+2026-11-22 07:22:22,660 ERROR ultron.desktop.runner runner exited with code 2; restarting in 5s
+2026-11-22 07:22:27,662 INFO ultron.desktop.runner starting runner: /home/ubuntu/repos/ultron-worker/.venv/bin/python -m ultron_worker --config /tmp/ur/config.toml --stop-on-stdin-close
+2026-11-22 07:22:28,663 ERROR ultron.desktop.runner runner exited with code 2; restarting in 15s
+2026-11-22 07:22:43,667 INFO ultron.desktop.runner starting runner: /home/ubuntu/repos/ultron-worker/.venv/bin/python -m ultron_worker --config /tmp/ur/config.toml --stop-on-stdin-close
+2026-11-22 07:22:44,669 ERROR ultron.desktop.runner runner exited with code 2; restarting in 45s

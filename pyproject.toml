@@ -1,6 +1,6 @@
 [project]
 name = "ultron-worker"
-version = "0.1.0"
+version = "0.2.0"
 description = "Ultron local job runner: backbone cards routed to local-ultron run on local models (Ollama, faster-whisper) on David's Surface, with a localhost status GUI."
 readme = "README.md"
 requires-python = ">=3.11"
