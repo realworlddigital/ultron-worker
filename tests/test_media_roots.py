@@ -235,3 +235,11 @@ def test_case_sensitive_roots_keep_case_variant_files_apart() -> None:
     ]
     assert [r["tags"] for r in roots.merge(nas)] == [["b"]]
     assert roots.relativize("/srv/local/A.jpg") is None  # POSIX prefix match keeps case
+
+
+def test_unconfigured_root_names_fold_case_on_windows(monkeypatch) -> None:
+    monkeypatch.setattr("ultron_worker.media.os.name", "nt")
+    roots = MediaRoots({})
+    a = {"root": "Archive", "relpath": "x/A.jpg"}
+    b = {"root": "archive", "relpath": "x/a.jpg"}
+    assert roots.identity(a) == roots.identity(b)

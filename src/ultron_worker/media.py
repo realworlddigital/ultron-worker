@@ -191,8 +191,10 @@ class MediaRoots:
         rec = self.normalize(record)
         if "root" in rec:
             name = self.lookup(str(rec["root"]))
-            root, rel = (name or str(rec["root"])), str(rec["relpath"])
             fold = self.folds[name] if name else os.name == "nt"
+            root, rel = (name or str(rec["root"])), str(rec["relpath"])
+            if name is None and fold:
+                root = root.casefold()  # unconfigured root: no canonical spelling to use
             return (root, rel.casefold() if fold else rel)
         path = str(rec.get("path") or "")
         return ("", self._cmp(path, _folds(path)))
