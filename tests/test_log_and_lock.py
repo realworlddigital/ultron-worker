@@ -131,6 +131,8 @@ def test_the_runner_lock_refuses_a_second_runner_cleanly(tmp_path, monkeypatch, 
     assert FakeRunner.ticks == 0
     err = capsys.readouterr().err
     assert f"already running: another ultron-runner (pid {os.getpid()})" in err
+    os.truncate(first.path, 0)  # probed between the holder's truncate and its pid write
+    assert runlock.holder(state) == -1
     first.release()
     assert runlock.holder(state) is None  # the file stays, the lock doesn't: not stale
     assert runlock.holder(tmp_path / "nowhere") is None

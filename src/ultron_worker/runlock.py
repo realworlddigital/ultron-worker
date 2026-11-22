@@ -48,7 +48,7 @@ def _unlock(fd: int) -> None:
 
 
 def _read_pid(fd: int) -> int:
-    with contextlib.suppress(OSError, ValueError):
+    with contextlib.suppress(OSError, ValueError, IndexError):  # IndexError: still empty
         os.lseek(fd, 0, os.SEEK_SET)
         return int(os.read(fd, 32).split()[0])
     return -1  # held, but the holder hasn't written its pid yet
