@@ -12,7 +12,11 @@
      Ultron icon, plus a Start Menu shortcut. The app owns the runner (Start/Stop/Restart, tray,
      autostart at logon from its own toggle, health lights, check-for-update + one-click update).
      It writes install.json, which records the repo, venv and installed commit for the updater.
-  5. Retires the old "Ultron Runner" Scheduled Task: if it is registered it is removed, so it
+  5. Heals %ProgramData%\Ultron on every run: grants the installing user full control of the
+     root and the whole state tree (icacls) and clears read-only attributes on the state files.
+     Processes at mixed privilege (elevated installs, the old task, manual launches) leave files
+     the next process can't write; a reinstall repairs that instead of inheriting it.
+  6. Retires the old "Ultron Runner" Scheduled Task: if it is registered it is removed, so it
      can't start a second runner beside the app. -RegisterTask is kept only to say so.
   Nothing listens on the LAN: the runner polls out over HTTPS; GUI and app bind 127.0.0.1 only.
 
@@ -36,7 +40,21 @@ try { $c = New-Object Net.Sockets.TcpClient; $c.Connect("127.0.0.1", 8764); $c.C
 if ($Running) { throw "The Ultron app is running. Quit it from the tray icon first (or use its Update button)." }
 
 Write-Host "Ultron runner install -> $Root" -ForegroundColor Red
-New-Item -ItemType Directory -Force -Path $Root, (Join-Path $Root "state") | Out-Null
+$State = Join-Path $Root "state"
+New-Item -ItemType Directory -Force -Path $Root, $State | Out-Null
+
+# Heal the tree (runner.key is locked down again below, after this).
+$Me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+& icacls $Root /grant "$($Me):(OI)(CI)F" /C /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Warning "icacls could not grant $Me full control of $Root (exit $LASTEXITCODE); run this install from an elevated prompt." }
+& icacls $State /grant "$($Me):(OI)(CI)F" /T /C /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Warning "icacls could not repair every file under $State (exit $LASTEXITCODE); run this install from an elevated prompt." }
+Get-ChildItem -LiteralPath $State -Recurse -Force -File -ErrorAction SilentlyContinue |
+  Where-Object { $_.IsReadOnly } | ForEach-Object { $_.IsReadOnly = $false }
+foreach ($f in @((Join-Path $Root "config.toml"), (Join-Path $Root "install.json"))) {
+  if ((Test-Path -LiteralPath $f) -and (Get-Item -LiteralPath $f -Force).IsReadOnly) { (Get-Item -LiteralPath $f -Force).IsReadOnly = $false }
+}
+Write-Host "Repaired permissions on $Root for $Me" -ForegroundColor Green
 
 $Venv = Join-Path $Root "venv"
 if (-not (Test-Path (Join-Path $Venv "Scripts\python.exe"))) {

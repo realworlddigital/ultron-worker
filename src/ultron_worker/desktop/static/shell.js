@@ -59,7 +59,7 @@
     // The check itself couldn't run: one "check unavailable" light, not three component failures.
     $("light-check").hidden = !na;
     if (na) light("check", "warn", "unavailable", `${h.unavailable}\n(--check ${ago(h.checked_at)})`);
-    for (const name of ["backbone", "queue", "ollama"]) {
+    for (const name of ["state", "backbone", "queue", "ollama"]) {
       $(`light-${name}`).hidden = na;
       if (na) continue;
       if (s.checking && !h) { light(name, "busy", "checking…"); continue; }

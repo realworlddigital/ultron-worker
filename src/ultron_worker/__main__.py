@@ -18,6 +18,7 @@ from .gui import start_gui
 from .runlock import ALREADY_RUNNING, RunnerLock, holder
 from .runner import Runner
 from .sharedfile import open_shared
+from .state import STATE_UNWRITABLE, state_problem
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 # Without a log file the lines go to stderr with this prefix, so the app's log pane (which hides
@@ -101,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--check",
         action="store_true",
-        help="validate config, key identity, Ollama and job kinds, then exit",
+        help="validate config, state dir, key identity, Ollama and job kinds, then exit",
     )
     ap.add_argument(
         "--stop-on-stdin-close",
@@ -128,6 +129,12 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return ALREADY_RUNNING
+        problem = state_problem(cfg.state_dir, cfg.db_path)
+        if args.check:
+            print(f"state: FAILED {problem}" if problem else f"state: OK, {cfg.state_dir} writable")
+        elif problem:  # before any card is claimed; restarting can't help, a repair can
+            print(f"state: FAILED {problem}", file=sys.stderr)
+            return STATE_UNWRITABLE
         try:
             runner = Runner(cfg, background=not args.once)
         except (OSError, sqlite3.Error) as exc:  # e.g. a state dir this account can't write
@@ -136,7 +143,14 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 3
-        return _run(args, cfg, runner, log)
+        if problem:
+            runner._set_state_error(problem)
+        try:
+            return _run(args, cfg, runner, log)
+        finally:
+            store = getattr(runner, "store", None)
+            if store is not None:
+                store.close()
     finally:
         if lock is not None:
             lock.release()
@@ -155,7 +169,7 @@ def _acquire(lock: RunnerLock, log: logging.Logger) -> bool:
 def _run(args: argparse.Namespace, cfg: Config, runner: Runner, log: logging.Logger) -> int:
     log.info("ultron-runner %s as %s; job kinds %s", __version__, cfg.actor, jobs.kinds())
     if args.check:
-        return _check(runner)
+        return _check(runner, state_ok=runner.state_error is None)
     if args.once:
         runner.tick()
         return 0
@@ -187,11 +201,11 @@ def _stop_on_eof(stop) -> None:  # type: ignore[no-untyped-def]
     stop()
 
 
-def _check(runner: Runner) -> int:
+def _check(runner: Runner, *, state_ok: bool = True) -> int:
     from .backbone import BackboneError, BackboneUnavailable
     from .jobs.transcribe import available
 
-    ok = True
+    ok = state_ok
     try:
         runner._verify_identity()
         print(f"backbone: OK, key is actor {runner.cfg.actor!r}")
