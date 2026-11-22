@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..media import MediaRoots
 from ..ollama import Ollama
 
 KEY_MAX = 1000
@@ -105,10 +106,16 @@ class JobContext:
     work_dir: Path
     stop: threading.Event = field(default_factory=threading.Event)
     cache: dict[str, Any] = field(default_factory=dict)
+    media_roots: MediaRoots | None = None
+
+    def __post_init__(self) -> None:
+        if self.media_roots is None:
+            self.media_roots = MediaRoots.build(None, self.allowed_roots)
 
     def allowed(self, path: str | os.PathLike[str], *, what: str) -> Path:
-        """Resolve ``path`` and refuse it unless it sits under one of the allowed roots."""
-        p = Path(os.path.expandvars(str(path))).expanduser()
+        """Resolve ``path`` (absolute, or ``ROOT/relative/...`` through the media roots) and
+        refuse it unless the resolved path sits under one of the allowed roots."""
+        p = Path(self.media_roots.resolve_ref(path)).expanduser()
         resolved = p.resolve(strict=False)
         norm = os.path.normcase(str(resolved))
         for root in self.allowed_roots:

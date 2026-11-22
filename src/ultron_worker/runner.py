@@ -206,6 +206,7 @@ class Runner:
             task_id=tid,
             ollama=self.ollama,
             allowed_roots=self.cfg.allowed_roots,
+            media_roots=self.cfg.roots(),
             work_dir=work_dir,
             stop=self.stop,
         )

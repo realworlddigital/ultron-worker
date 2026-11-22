@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ..media import load_index
 from ..ollama import OllamaError, OllamaModelMissing, OllamaUnavailable
 from . import register
 from .base import (
@@ -154,6 +155,12 @@ def is_tag_record(result: dict[str, Any]) -> bool:
 class VisionTag(JobKind):
     name = "vision_tag"
 
+    def validate(self, spec: JobSpec, ctx: JobContext) -> None:
+        super().validate(spec, ctx)
+        for ref in _merge_refs(spec):
+            if not ctx.allowed(ref, what="merge index").is_file():
+                raise JobError(f"merge index {ref!r} does not exist on this machine")
+
     def plan(self, spec: JobSpec, ctx: JobContext) -> list[WorkItem]:
         exts = set(IMAGE_EXTS)
         if spec.params.get("include_video", True):
@@ -200,7 +207,7 @@ class VisionTag(JobKind):
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
         result: dict[str, Any] = {
-            "path": str(path),
+            **_location(path, ctx),
             "media": item.payload["media"],
             "caption": caption,
             "tags": tags,
@@ -305,7 +312,16 @@ class VisionTag(JobKind):
         out = ctx.allowed(spec.output, what="output target")
         if out.is_dir():
             raise JobError(f"output target {str(out)!r} is a folder; name a .json/.jsonl file")
-        records = [r if is_tag_record(r) else _failed(r) for _, r in results]
+        roots = ctx.media_roots
+        earlier = []
+        for ref in _merge_refs(spec):
+            try:
+                index = load_index(ctx.allowed(ref, what="merge index"), roots)
+            except (OSError, ValueError) as exc:
+                raise JobError(f"merge index {ref!r} can't be read: {exc}") from exc
+            earlier.append([r if is_tag_record(r) else _failed(r) for r in index])
+        this_pass = [r if is_tag_record(r) else _failed(r) for _, r in results]
+        records = roots.merge(*earlier, this_pass)
         skipped = [r for r in records if "skipped" in r]
         failed = [r for r in records if "failed" in r]
         tagged = [r for r in records if "skipped" not in r and "failed" not in r]
@@ -319,20 +335,46 @@ class VisionTag(JobKind):
                 "tagged": len(tagged),
                 "skipped": len(skipped),
                 "failed": len(failed),
+                "media_roots": sorted({r["root"] for r in records if "root" in r}),
             },
             records,
         )
         summary = f"{len(tagged)} tagged, {len(skipped)} skipped"
         if failed:
             summary += f", {len(failed)} failed"
+        if earlier:
+            summary += f" (merged with {len(earlier)} earlier index(es))"
         return Output(paths=[str(out)], summary=summary)
 
 
 def _failed(result: dict[str, Any]) -> dict[str, Any]:
-    """The only shape an unusable result reaches the output in: path + reason, no tags."""
+    """The only shape an unusable result reaches the output in: location + reason, no tags."""
     reason = result.get("failed") or "malformed result from an earlier run"
-    out = {"path": result.get("path"), "media": result.get("media"), "failed": str(reason)}
+    out = {
+        "root": result.get("root"),
+        "relpath": result.get("relpath"),
+        "path": result.get("path"),
+        "media": result.get("media"),
+        "failed": str(reason),
+    }
     return {k: v for k, v in out.items() if v is not None}
+
+
+def _location(path: Path, ctx: JobContext) -> dict[str, str]:
+    """A record's identity: media root name + forward-slash relative path (the absolute
+    ``path`` rides along for debugging only; readers derive it from the mapping)."""
+    found = ctx.media_roots.relativize(path)
+    loc = {"root": found[0], "relpath": found[1]} if found else {}
+    return {**loc, "path": str(path)}
+
+
+def _merge_refs(spec: JobSpec) -> list[str]:
+    refs = spec.params.get("merge") or []
+    if isinstance(refs, str):
+        refs = [refs]
+    if not isinstance(refs, list) or not all(isinstance(r, str) and r for r in refs):
+        raise JobError("card data.job.params.merge must be a list of index paths")
+    return refs
 
 
 register(VisionTag())

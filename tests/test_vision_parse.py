@@ -126,7 +126,7 @@ def test_still_unparseable_item_is_failed_then_retried_from_checkpoint(
     assert "1 item(s) failed" in job["error"] and "ultron.retry" in bb.actions("t1")
     rows = _lines(out)  # written with the item marked failed, never as a tag record
     [bad] = [r for r in rows if Path(r["path"]).stem == "c"]
-    assert set(bad) == {"path", "failed"} and "repair" in bad["failed"]
+    assert set(bad) == {"root", "relpath", "path", "failed"} and "repair" in bad["failed"]
     assert sum(1 for r in rows if is_tag_record(r)) == 4
 
     runner.tick()  # next attempt: only the failed item goes back to the model
