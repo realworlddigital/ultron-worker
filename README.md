@@ -142,10 +142,18 @@ starts the runner as its child and owns it:
   it when the runner exits, even if killed). Start first checks for a live runner (lock held or
   status GUI answering) and reports it as **outside app** with its pid instead of starting a
   rival; a second runner started by hand exits with code 4 and says which pid holds the lock.
-- **Health lights.** Backbone identity, queue and Ollama, from the runner's own `--check`. They
-  refresh after every start, every 10 minutes, and when you press **Re-check**. If the check itself
-  can't run (won't start, crashes before reporting, times out), the three lights are replaced by
-  one **Check unavailable** light with the reason: that is one problem, not three failures.
+- **State must be writable.** Before claiming any card (at startup and on every poll that would
+  claim one) the runner probes `state\`: a file created, written and deleted, and a committed write
+  to `ultron.sqlite3` opened read-write. If that fails it claims nothing and says so in one line
+  naming the path and the remedy (re-run `scripts\install.ps1`, which repairs the permissions on
+  `%ProgramData%\Ultron` and clears read-only state files). At startup it then exits with code 5,
+  which the app doesn't retry. If the DB refuses a job start (tried `max_attempts` times) or a
+  checkpoint, the card goes to needs_david with one note giving the reason.
+- **Health lights.** State dir, backbone identity, queue and Ollama, from the runner's own
+  `--check`. They refresh after every start, every 10 minutes, and when you press **Re-check**. If
+  the check itself can't run (won't start, crashes before reporting, times out), the lights are
+  replaced by one **Check unavailable** light with the reason: that is one problem, not several
+  failures.
 - **Status and log.** The existing status GUI (unchanged) in the middle, and a live tail of
   `ultron.log` below it.
 - **Tray.** Closing the window hides it to the tray and the runner keeps working. The tray menu has

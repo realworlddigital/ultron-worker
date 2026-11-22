@@ -12,6 +12,7 @@ localhost GUI: the runner writes it, the GUI only reads :meth:`StatusBoard.snaps
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -43,6 +44,48 @@ CREATE TABLE IF NOT EXISTS items (
 
 # Columns added after the first schema: a state DB from an older runner gets them on open.
 MIGRATIONS = (("spec", "TEXT"), ("report_step", "INTEGER NOT NULL DEFAULT 0"))
+
+
+# The runner's exit code when its state dir is not writable: restarting can't help, a repair can.
+STATE_UNWRITABLE = 5
+STATE_REMEDY = (
+    "fix: run scripts\\install.ps1 again on this machine (it repairs the permissions on "
+    "%ProgramData%\\Ultron and clears read-only state files), then start the runner"
+)
+
+
+def state_problem(state_dir: Path, db_path: Path) -> str | None:
+    """Why the runner can't write its state, in one line with the path and the remedy; None if
+    it can. Probes what the runner needs: a file created, written and deleted in the state dir,
+    and a committed write to the SQLite DB opened read-write (an unwritable DB opens fine and
+    fails only on the first write, after a card is claimed)."""
+    probe = state_dir / f".write-probe-{os.getpid()}"
+    target = state_dir
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        target = probe
+        with open(probe, "w", encoding="utf-8") as fh:
+            fh.write("ultron state write probe\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        probe.unlink()
+        target = db_path
+        db = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=rwc", uri=True, timeout=5.0)
+        try:
+            db.isolation_level = None
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("CREATE TABLE IF NOT EXISTS probe (k TEXT PRIMARY KEY, at TEXT)")
+            db.execute("INSERT OR REPLACE INTO probe VALUES ('write', ?)", (now_iso(),))
+            db.execute("COMMIT")
+        finally:
+            db.close()
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc) or "busy" in str(exc):
+            return None  # another process is writing it right now: not a permission problem
+        return f"{target} is not writable ({exc}); {STATE_REMEDY}"
+    except (OSError, sqlite3.Error) as exc:
+        return f"{target} is not writable ({type(exc).__name__}: {exc}); {STATE_REMEDY}"
+    return None
 
 
 def now_iso() -> str:

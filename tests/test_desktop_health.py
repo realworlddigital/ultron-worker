@@ -4,7 +4,8 @@ import sys
 
 from ultron_worker.desktop.health import assess, parse_check, run_check
 
-GOOD = """backbone: OK, key is actor 'ultron-runner'
+GOOD = """state: OK, C:\\ProgramData\\Ultron\\state writable
+backbone: OK, key is actor 'ultron-runner'
 queue: 3 dispatched card(s)
 ollama: OK
 job kinds: embeddings, text_batch, transcribe, vision_tag; faster-whisper not installed
@@ -14,6 +15,7 @@ job kinds: embeddings, text_batch, transcribe, vision_tag; faster-whisper not in
 def test_all_green() -> None:
     lights = parse_check(0, GOOD)
     assert {k: v.state for k, v in lights.items()} == {
+        "state": "ok",
         "backbone": "ok",
         "queue": "ok",
         "ollama": "ok",

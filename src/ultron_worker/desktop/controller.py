@@ -17,6 +17,7 @@ from typing import Any
 
 from .. import runlock
 from ..sharedfile import open_shared
+from ..state import STATE_UNWRITABLE
 from . import health, update, winenv
 from .autostart import Autostart
 from .layout import Install, RunnerSettings, now_iso, repo_head, venv_python
@@ -72,7 +73,7 @@ class App:
             output_path=self.settings.state_dir / "ultron-runner.output.log",
             cwd=self.child_cwd(),
             env=self.child_env,
-            final_codes=frozenset({runlock.ALREADY_RUNNING}),
+            final_codes=frozenset({runlock.ALREADY_RUNNING, STATE_UNWRITABLE}),
         )
         self._lock = threading.Lock()
         self.health: health.HealthReport | None = None

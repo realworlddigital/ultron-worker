@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import threading
 import time
 from typing import Any
@@ -25,7 +26,7 @@ from .backbone import Backbone, BackboneError, BackboneUnavailable, ScopeViolati
 from .config import Config
 from .jobs.base import ItemFailed, ItemRetry, JobContext, JobError, JobSpec, JobStopped, WorkItem
 from .ollama import Ollama, OllamaModelMissing, OllamaUnavailable
-from .state import StatusBoard, Store, now_iso
+from .state import STATE_REMEDY, StatusBoard, Store, now_iso, state_problem
 
 log = logging.getLogger("ultron")
 # Consecutive item failures, with no success yet in this run, that mean "the job is broken"
@@ -33,10 +34,15 @@ log = logging.getLogger("ultron")
 BROKEN_AFTER = 5
 WATCH_STEP = 5.0  # sleep-watch granularity, seconds
 BUDGET_GRACE = WATCH_STEP + 1  # lets the watch report a just-ended suspend first
+START_RETRY_SECONDS = 2.0  # backoff step between tries to open a job's state row
 
 
 class _Stopped(Exception):
     """Runner shutting down mid-job: leave the card in_progress, keep the checkpoint."""
+
+
+class StateUnwritable(Exception):
+    """The state DB refused a write: the job can't checkpoint, so it must not run."""
 
 
 def job_fingerprint(job_spec: dict[str, Any]) -> str:
@@ -78,6 +84,7 @@ class Runner:
         self.poll_now = threading.Event()
         self._job_thread: threading.Thread | None = None
         self._verified = False
+        self.state_error: str | None = None
         jobs.load(cfg.job_modules)
 
     # ---- one poll -------------------------------------------------------------
@@ -105,6 +112,8 @@ class Runner:
         )
         if busy or not runnable or self.stop.is_set():
             return
+        if not self.state_writable():
+            return  # never claim a card the runner couldn't checkpoint
         card = runnable[0]
         fresh = card.get("status") == "dispatched"
         if self.background:
@@ -129,6 +138,21 @@ class Runner:
             )
         self._verified = True
 
+    def state_writable(self) -> bool:
+        """Probe the state dir + DB; on a problem log it once (not every poll) and show it."""
+        problem = state_problem(self.cfg.state_dir, self.cfg.db_path)
+        if problem != self.state_error:
+            if problem:
+                log.error("state: FAILED %s; not claiming cards", problem)
+            else:
+                log.info("state: OK, %s is writable again", self.cfg.state_dir)
+            self._set_state_error(problem)
+        return problem is None
+
+    def _set_state_error(self, problem: str | None) -> None:
+        self.state_error = problem
+        self.board.set(state_error=problem)
+
     def _resumable(self, task: dict[str, Any]) -> bool:
         job = self.store.job(task["id"])
         return job is None or job["status"] != "needs_david"
@@ -137,6 +161,10 @@ class Runner:
     def _execute_safely(self, card: dict[str, Any], fresh: bool) -> None:
         try:
             self.execute(card, fresh=fresh)
+        except (StateUnwritable, sqlite3.Error) as exc:
+            self._park_unwritable(card["id"], exc)
+        except _Stopped:
+            log.info("job %s not started: the runner is stopping", card.get("id"))
         except Exception:  # noqa: BLE001 (a runner bug must never kill the poll loop)
             log.exception("job %s crashed the executor", card.get("id"))
         finally:
@@ -158,7 +186,7 @@ class Runner:
                 log.warning("claim of %s refused (%s): leaving it", tid, exc)
                 return
         job_spec = data.get("job") if isinstance(data.get("job"), dict) else {}
-        job = self.store.start_job(
+        job = self._start_job(
             tid,
             title=title,
             kind=str(job_spec.get("kind") or "?"),
@@ -188,12 +216,54 @@ class Runner:
             self._fail(tid, str(exc), retryable=True)
         except ScopeViolation as exc:
             self._fail(tid, f"scope violation (runner bug): {exc}", retryable=False)
+        except sqlite3.Error:
+            raise  # the checkpoint itself failed: _fail couldn't record it either
         except Exception as exc:  # noqa: BLE001 (unknown errors: bounded retries, then David)
             log.exception("job %s failed", tid)
             self._fail(tid, f"{type(exc).__name__}: {exc}", retryable=True)
         job = self.store.job(tid)
         if job and job["status"] in ("finished", "failing"):
             self._report(tid, job)
+
+    def _start_job(self, tid: str, **fields: Any) -> dict[str, Any]:
+        """Store.start_job, tried ``max_attempts`` times with a short backoff (a DB another
+        process holds for a moment); StateUnwritable if it never succeeds."""
+        for attempt in range(1, self.cfg.max_attempts + 1):
+            try:
+                return self.store.start_job(tid, **fields)
+            except (sqlite3.Error, OSError) as exc:
+                log.warning(
+                    "job %s: state DB refused the job start (%s/%s): %s",
+                    tid,
+                    attempt,
+                    self.cfg.max_attempts,
+                    exc,
+                )
+                if attempt == self.cfg.max_attempts:
+                    raise StateUnwritable(str(exc)) from exc
+                if self.stop.wait(START_RETRY_SECONDS * attempt):
+                    raise _Stopped from exc
+        raise AssertionError("unreachable")
+
+    def _park_unwritable(self, tid: str, exc: BaseException) -> None:
+        """Hand the card to David with one note saying why. Nothing can be recorded locally
+        (the DB is what failed), and the runner claims nothing more until the probe passes."""
+        problem = state_problem(self.cfg.state_dir, self.cfg.db_path)
+        self._set_state_error(problem or str(exc))
+        reason = (
+            f"Ultron could not save its progress for this job, so it did not run it: "
+            f"{problem or f'its state database {self.cfg.db_path} refused a write ({exc}); '}"
+            f"{'' if problem else STATE_REMEDY}. Then move the card back to dispatched."
+        )
+        log.error("job %s parked to needs_david: %s", tid, reason)
+        try:  # moved first: a retried park never posts the note twice
+            self.bb.transition(tid, "needs_david", note="Ultron's state DB is not writable")
+            self.bb.note(tid, reason, kind="action")
+        except BackboneUnavailable as err:
+            log.warning("parking %s deferred (backbone unreachable): %s", tid, err)
+            self.board.contact(False, f"backbone unreachable: {err}")
+        except BackboneError as err:
+            log.error("parking %s refused: %s", tid, err)
 
     def _run(self, tid: str, title: str, data: dict[str, Any], job: dict[str, Any]) -> None:
         spec = JobSpec.from_card(data)

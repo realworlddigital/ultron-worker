@@ -1,4 +1,4 @@
-"""Health lights from ``ultron-runner --check``: backbone identity, queue, Ollama.
+"""Health lights from ``ultron-runner --check``: state dir, backbone identity, queue, Ollama.
 
 The check runs as its own short process (exactly what David would type), so the lights show
 what the runner itself would see, and a broken config or key turns them red with the reason.
@@ -17,9 +17,9 @@ from typing import Any
 
 from .layout import NO_WINDOW, now_iso
 
-LIGHTS = ("backbone", "queue", "ollama")
+LIGHTS = ("state", "backbone", "queue", "ollama")
 CHECK_TIMEOUT = 120.0
-REPORT_LINE = re.compile(r"\s*(backbone|queue|ollama|config|job kinds):")
+REPORT_LINE = re.compile(r"\s*(state|backbone|queue|ollama|config|job kinds):")
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ class Light:
 
 
 def parse_check(code: int | None, output: str) -> dict[str, Light]:
-    """Map ``--check`` output (stdout + stderr) and its exit code onto the three lights."""
+    """Map ``--check`` output (stdout + stderr) and its exit code onto the lights."""
     lights = {name: Light("unknown", "not checked") for name in LIGHTS}
     lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
     for line in lines:
@@ -40,7 +40,12 @@ def parse_check(code: int | None, output: str) -> dict[str, Light]:
     for line in lines:
         head, _, rest = line.partition(":")
         rest = rest.strip()
-        if head == "backbone":
+        if head == "state":
+            if rest.startswith("OK"):
+                lights["state"] = Light("ok", "writable", rest)
+            else:
+                lights["state"] = Light("bad", "not writable", rest.removeprefix("FAILED").strip())
+        elif head == "backbone":
             if rest.startswith("OK"):
                 m = re.search(r"actor '([^']+)'", rest)
                 lights["backbone"] = Light("ok", m.group(1) if m else "OK", rest)
