@@ -113,9 +113,19 @@ delete `%ProgramData%\Ultron`.
 starts the runner as its child and owns it:
 
 - **Controls.** Start, Stop and Restart. Stop and Quit close the runner's stdin, so it stops at its
-  next checkpoint exactly like Ctrl+C. A runner that crashes is restarted with a backoff.
+  next checkpoint exactly like Ctrl+C. A runner that crashes is restarted after 5, 15 and 45 s; if
+  it still crashes, the app stops retrying and shows **will not start - see log** until you press
+  Start.
+- **Environment.** The runner and its `--check` get your full environment, with PATH refreshed from
+  the registry (so software installed since you signed in is found) and the active venv's
+  `Scripts` first, the install folder as working directory and the absolute `config.toml` path.
+  Their stdout/stderr is captured: a runner that dies before opening `ultron.log` still shows its
+  error in the log pane (as `[runner output]` lines), and it is kept in
+  `state\ultron-runner.output.log`.
 - **Health lights.** Backbone identity, queue and Ollama, from the runner's own `--check`. They
-  refresh after every start, every 10 minutes, and when you press **Run --check**.
+  refresh after every start, every 10 minutes, and when you press **Re-check**. If the check itself
+  can't run (won't start, crashes before reporting, times out), the three lights are replaced by
+  one **Check unavailable** light with the reason: that is one problem, not three failures.
 - **Status and log.** The existing status GUI (unchanged) in the middle, and a live tail of
   `ultron.log` below it.
 - **Tray.** Closing the window hides it to the tray and the runner keeps working. The tray menu has
@@ -125,7 +135,9 @@ starts the runner as its child and owns it:
   replaces the old **Ultron Runner** Scheduled Task, which the installer now removes if present
   (`-RegisterTask` is retired).
 - **Updates.** On launch and on **Check for updates**, the app compares the installed commit with
-  `origin/main` and shows both short SHAs and subjects. Nothing updates without your click. If a job
+  `origin/main` and shows both short SHAs and subjects. git is found on PATH, then on the
+  registry's current PATH, then in `Program Files\Git` and `%LOCALAPPDATA%\Programs\Git`. An
+  install recorded without its commit takes the clone's HEAD (read from `.git` if git can't run). Nothing updates without your click. If a job
   is running, **Update** waits for it to finish (or **Update now**: checkpointing resumes the job).
   It fast-forwards the checkout, builds a fresh venv in `venvs\<sha>`, and runs `--check` there.
   Only then does it stop the runner and restart the app on the new install, which shows

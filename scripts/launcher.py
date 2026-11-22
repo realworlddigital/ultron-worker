@@ -54,7 +54,17 @@ def main() -> int:
         "--launcher",
         sys.executable,
     ]
-    subprocess.Popen([*cmd, *sys.argv[1:]], creationflags=FLAGS, close_fds=True, cwd=str(ROOT))
+    # The app and the runner it starts get David's environment, not this bootloader's.
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("_MEIPASS", "_PYI_"))}
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.SetDllDirectoryW(None)  # undo PyInstaller's DLL search dir
+    except Exception:  # noqa: BLE001
+        pass
+    subprocess.Popen(
+        [*cmd, *sys.argv[1:]], creationflags=FLAGS, close_fds=True, cwd=str(ROOT), env=env
+    )
     return 0
 
 

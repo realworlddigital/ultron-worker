@@ -6,6 +6,7 @@ import argparse
 import logging
 import logging.handlers
 import signal
+import sqlite3
 import sys
 import threading
 
@@ -48,9 +49,13 @@ def main(argv: list[str] | None = None) -> int:
     except (ConfigError, OSError) as exc:
         print(f"config: {exc}", file=sys.stderr)
         return 2
-    _logging(cfg.state_dir)
+    try:
+        _logging(cfg.state_dir)
+        runner = Runner(cfg, background=not args.once)
+    except (OSError, sqlite3.Error) as exc:  # e.g. a state dir this account can't write
+        print(f"startup: {type(exc).__name__}: {exc} (state_dir {cfg.state_dir})", file=sys.stderr)
+        return 3
     log = logging.getLogger("ultron")
-    runner = Runner(cfg, background=not args.once)
     log.info("ultron-runner %s as %s; job kinds %s", __version__, cfg.actor, jobs.kinds())
     if args.check:
         return _check(runner)

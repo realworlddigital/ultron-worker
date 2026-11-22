@@ -28,6 +28,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import winenv
+
 WINDOWS = os.name == "nt"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -77,8 +79,9 @@ class RunnerSettings:
 
 class Install:
     def __init__(self, root: Path, config: Path | None = None) -> None:
-        self.root = Path(root)
-        self.config = Path(config) if config else self.root / "config.toml"
+        # Absolute: the runner gets the install's real paths, whatever the app's cwd was.
+        self.root = Path(root).absolute()
+        self.config = Path(config).absolute() if config else self.root / "config.toml"
         self.data: dict[str, Any] = {}
         self.reload()
 
@@ -160,20 +163,59 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def _git_head(repo: Path) -> str | None:
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            creationflags=NO_WINDOW,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if out.returncode != 0:
-        return None
-    return out.stdout.strip() or None
+def _read_head(repo: Path) -> str | None:
+    """HEAD's sha straight from the ``.git`` files (loose ref, packed-refs or detached), for
+    when git itself can't be run."""
+    git_dir = repo / ".git"
+    with contextlib.suppress(OSError):
+        if git_dir.is_file():  # a worktree / submodule: "gitdir: <path>"
+            target = git_dir.read_text(encoding="utf-8").strip().removeprefix("gitdir:").strip()
+            git_dir = (repo / target).resolve()
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref:"):
+            return head if _is_sha(head) else None
+        ref = head.removeprefix("ref:").strip()
+        common = git_dir
+        if (git_dir / "commondir").is_file():
+            common = git_dir / (git_dir / "commondir").read_text(encoding="utf-8").strip()
+        for base in dict.fromkeys((git_dir, common)):
+            loose = base / ref
+            if loose.is_file():
+                sha = loose.read_text(encoding="utf-8").strip()
+                return sha if _is_sha(sha) else None
+        packed = common / "packed-refs"
+        if packed.is_file():
+            for line in packed.read_text(encoding="utf-8").splitlines():
+                sha, _, name = line.partition(" ")
+                if name.strip() == ref and _is_sha(sha):
+                    return sha
+    return None
+
+
+def _is_sha(text: str) -> bool:
+    return len(text) == 40 and all(c in "0123456789abcdef" for c in text.lower())
+
+
+def repo_head(repo: Path) -> str | None:
+    """The clone's HEAD commit: ``git rev-parse HEAD`` (git found the robust way), else read
+    from the ``.git`` files; None if neither works."""
+    exe = winenv.git_exe()
+    if exe:
+        try:
+            out = subprocess.run(
+                [exe, "-C", str(repo), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                stdin=subprocess.DEVNULL,
+                creationflags=NO_WINDOW,
+            )
+            sha = out.stdout.strip()
+            if out.returncode == 0 and _is_sha(sha):
+                return sha
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return _read_head(repo)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -187,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     rec.add_argument("--launcher", type=Path)
     args = ap.parse_args(argv)
     inst = Install(args.root)
-    sha = _git_head(args.repo)
+    sha = repo_head(args.repo)
     inst.save(
         repo=str(args.repo.resolve()),
         venv=str(args.venv),

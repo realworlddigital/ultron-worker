@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import sys
 import textwrap
 import time
@@ -15,7 +16,7 @@ from ultron_worker.desktop.controller import tail
 from ultron_worker.desktop.instance import SingleInstance
 from ultron_worker.desktop.layout import Install, RunnerSettings
 from ultron_worker.desktop.server import ShellServer, frame_same_origin
-from ultron_worker.desktop.supervisor import RunnerProcess
+from ultron_worker.desktop.supervisor import BACKOFF, STABLE_SECONDS, RunnerProcess
 from ultron_worker.gui import StatusGui
 
 
@@ -122,24 +123,26 @@ def test_proxy_when_runner_gui_is_down(make) -> None:
 
 CHILD = textwrap.dedent(
     """
-    import sys, time, pathlib
+    import os, sys, time, pathlib
     out = pathlib.Path(sys.argv[1])
     assert sys.argv[-1] == "--stop-on-stdin-close"
     out.write_text("started")
+    print("2026-11-22 01:00:00,000 INFO ultron a log line", flush=True)
+    print("env", os.environ.get("ULTRON_TEST_ENV"), flush=True)
     if "crash" in sys.argv:
-        sys.exit(3)
+        sys.exit("boom: PermissionError on ultron.log")
     sys.stdin.buffer.read()  # until the owner closes our stdin
     out.write_text("stopped cleanly")
     """
 )
 
 
-def child(tmp_path: Path, *extra: str) -> tuple[RunnerProcess, Path]:
+def child(tmp_path: Path, *extra: str, **kw) -> tuple[RunnerProcess, Path]:
     script = tmp_path / "child.py"
     script.write_text(CHILD)
     marker = tmp_path / "marker"
     proc = RunnerProcess(
-        lambda: [sys.executable, str(script), str(marker), *extra], stop_timeout=10
+        lambda: [sys.executable, str(script), str(marker), *extra], stop_timeout=10, **kw
     )
     return proc, marker
 
@@ -168,7 +171,7 @@ def test_supervisor_revives_a_crashed_runner(tmp_path) -> None:
     wait_for(lambda: not proc.running())
     proc.poll(now=0)
     st = proc.status()
-    assert st["state"] == "crashed" and st["exit_code"] == 3
+    assert st["state"] == "crashed" and st["exit_code"] == 1
     marker.unlink()
     proc.poll(now=1)  # backoff not elapsed
     assert not marker.exists()
@@ -176,6 +179,59 @@ def test_supervisor_revives_a_crashed_runner(tmp_path) -> None:
     wait_for(lambda: marker.exists())
     proc.stop()
     assert proc.status()["state"] == "stopped"
+
+
+def test_crash_output_is_captured_and_retries_stop(tmp_path) -> None:
+    out_log = tmp_path / "state" / "ultron-runner.output.log"
+    proc, marker = child(
+        tmp_path,
+        "crash",
+        output_path=out_log,
+        env=lambda: {**os.environ, "ULTRON_TEST_ENV": "from-shell"},
+    )
+    proc.start()
+    now = 0.0
+    for _ in range(len(BACKOFF) + 1):
+        wait_for(lambda: not proc.running())
+        proc.poll(now=now)
+        now += 1000
+        proc.poll(now=now)  # revive (until it gives up)
+    wait_for(lambda: not proc.running())
+    proc.poll(now=now)
+    st = proc.status()
+    assert st["state"] == "failed" and st["exit_code"] == 1 and st["restart_in"] is None
+    # the crash's own words reach the app; log-formatted lines are left to ultron.log
+    assert proc.output() == ["env from-shell", "boom: PermissionError on ultron.log"]
+    assert "a log line" in proc.output(include_log_lines=True)[0]
+    assert out_log.read_text().count("boom: PermissionError") == len(BACKOFF) + 1
+    marker.unlink()
+    proc.poll(now=now + 1e6)
+    assert not marker.exists()  # given up: no more retries
+    proc.start()  # David presses Start: a fresh run of retries
+    wait_for(lambda: marker.exists())
+    wait_for(lambda: not proc.running())
+    proc.poll(now=now + 1e6)
+    assert proc.status()["state"] == "crashed"
+    proc.stop()
+
+
+def test_a_runner_that_cannot_be_spawned_shows_why(tmp_path) -> None:
+    proc = RunnerProcess(lambda: [str(tmp_path / "missing.exe")])
+    proc.start()
+    st = proc.status()
+    assert st["state"] == "crashed" and "could not start the runner" in proc.output()[0]
+    proc.stop()
+
+
+def test_a_long_run_resets_the_crash_count(tmp_path) -> None:
+    proc, _ = child(tmp_path, "crash")
+    proc.crashes = len(BACKOFF)  # one more quick crash would give up
+    proc.start()
+    wait_for(lambda: not proc.running())
+    proc._started_mono -= STABLE_SECONDS  # pretend it ran for a long while
+    proc.poll(now=0)
+    assert proc.status()["state"] == "crashed" and proc.crashes == 1
+    proc.stop()
 
 
 def test_stopped_runner_is_not_revived(tmp_path) -> None:
@@ -322,3 +378,53 @@ def test_app_moves_to_the_active_venv(tmp_path: Path) -> None:
     exe.write_text("")
     inst.save(venv=str(new))
     assert active_python(inst) == exe  # an old shortcut/venv: switch to the updated install
+
+
+def test_runner_reports_an_unwritable_state_dir_instead_of_a_bare_traceback(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    from ultron_worker.__main__ import main
+
+    blocker = tmp_path / "state"
+    blocker.write_text("a file where the state dir should be")
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[backbone]\nurl = "http://127.0.0.1:9"\n'
+        f"[runner]\nstate_dir = {json.dumps(str(blocker))}\n"
+        f"allowed_roots = [{json.dumps(str(tmp_path))}]\n"
+    )
+    monkeypatch.setenv("ULTRON_BACKBONE_KEY", "test-key")
+    assert main(["--config", str(cfg), "--check"]) == 3
+    assert capsys.readouterr().err.startswith("startup: FileExistsError")
+
+
+def test_runner_output_file_stays_bounded(tmp_path, monkeypatch) -> None:
+    from ultron_worker.desktop import supervisor
+
+    monkeypatch.setattr(supervisor, "OUTPUT_FILE_MAX", 1000)
+    out_log = tmp_path / "out.log"
+    proc = RunnerProcess(lambda: ["x"], output_path=out_log)
+    proc._open_output()
+    for i in range(500):
+        proc._note(f"line {i:04d} " + "x" * 40)
+    proc._close_output()
+    assert out_log.stat().st_size <= 1000 + 60
+    assert (tmp_path / "out.log.1").stat().st_size <= 1000 + 60
+    assert "line 0499" in out_log.read_text()
+
+
+def test_runner_output_keeps_writing_when_rotation_is_blocked(tmp_path, monkeypatch) -> None:
+    from ultron_worker.desktop import supervisor
+
+    def locked(*a, **k):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(supervisor, "OUTPUT_FILE_MAX", 1000)
+    monkeypatch.setattr(supervisor.os, "replace", locked)
+    out_log = tmp_path / "out.log"
+    proc = RunnerProcess(lambda: ["x"], output_path=out_log)
+    proc._open_output()
+    for i in range(500):
+        proc._note(f"line {i:04d} " + "x" * 40)
+    proc._close_output()
+    assert out_log.stat().st_size <= 1000 + 60 and "line 0499" in out_log.read_text()

@@ -37,6 +37,10 @@ button.small { padding: 3px 10px; font-size: 12px; }
 .banner { padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; align-items: center; gap: 12px; }
 .banner[hidden] { display: none; }
 .banner.warn { color: var(--amber); }
+.banner.bad { color: var(--red); }
+.light[hidden] { display: none; }
+.light[data-state="unavailable"] i { background: #555; }
+#log .out { color: var(--amber); }
 #flash[data-kind="ok"] { color: var(--green); }
 #flash[data-kind="bad"] { color: var(--red); }
 .banner.update, .banner.job { flex-direction: column; align-items: stretch; background: linear-gradient(90deg, rgb(var(--red-rgb) / .14), var(--panel) 60%); }

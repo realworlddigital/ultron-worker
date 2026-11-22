@@ -29,11 +29,12 @@
   const commit = (c) => c ? [c.short, c.subject] : ["—", ""];
 
   function renderRunner(r) {
-    const map = { running: "ok", stopping: "busy", crashed: "bad", stopped: "bad" };
+    const map = { running: "ok", stopping: "busy", crashed: "bad", failed: "bad", stopped: "bad" };
     let label = r.state, detail = r.pid ? `pid ${r.pid}, started ${ago(r.started_at)}` : "";
     if (r.external) { label = "outside app"; detail = "a runner started outside the app is running"; }
     else if (r.state === "running" && r.activity) label = r.activity.replace(/-/g, " ");
-    else if (r.state === "crashed") label = `crashed (exit ${r.exit_code}), retry ${r.restart_in}s`;
+    else if (r.state === "crashed") label = `crashed (exit ${r.exit_code}), retry ${r.crashes}/${r.max_restarts} in ${r.restart_in}s`;
+    else if (r.state === "failed") { label = "will not start - see log"; detail = `exited with code ${r.exit_code} ${r.crashes + 1} times in a row; press Start to try again`; }
     else if (r.state === "stopped" && r.exit_code != null) detail = `exited with code ${r.exit_code} ${ago(r.exited_at)}`;
     light("runner", r.external ? "warn" : r.state === "running" && r.activity === "working" ? "ok" : map[r.state] || "unknown", label, detail);
     const up = r.state === "running" || r.state === "stopping";
@@ -43,9 +44,24 @@
     $("external").hidden = !r.external;
   }
 
+  function renderFailed(s) {
+    const r = s.runner, failed = r.state === "failed";
+    $("runner-failed").hidden = !failed;
+    if (!failed) return;
+    const out = s.output || [];
+    $("runner-failed-code").textContent = r.exit_code == null ? "without starting" : `with code ${r.exit_code}`;
+    $("runner-failed-tries").textContent = String(r.crashes + 1);
+    $("runner-failed-why").textContent = out.length ? out[out.length - 1] : "it wrote nothing.";
+  }
+
   function renderHealth(s) {
-    const h = s.health;
+    const h = s.health, na = !!(h && h.unavailable);
+    // The check itself couldn't run: one "check unavailable" light, not three component failures.
+    $("light-check").hidden = !na;
+    if (na) light("check", "warn", "unavailable", `${h.unavailable}\n(--check ${ago(h.checked_at)})`);
     for (const name of ["backbone", "queue", "ollama"]) {
+      $(`light-${name}`).hidden = na;
+      if (na) continue;
       if (s.checking && !h) { light(name, "busy", "checking…"); continue; }
       if (!h) { light(name, "unknown", "not checked"); continue; }
       const l = h.lights[name];
@@ -98,14 +114,18 @@
 
   function renderLog(s) {
     $("log-path").textContent = s.log_path;
-    const text = s.log.join("\n");
+    // The runner's own stdout/stderr (startup errors, tracebacks) after its log file's tail.
+    const out = (s.output || []).map((ln) => `[runner output] ${ln}`);
+    const lines = [...s.log, ...out];
+    const text = lines.join("\n");
     if (text === lastLog) return;
     lastLog = text;
     const pre = $("log");
-    pre.replaceChildren(...s.log.map((ln) => {
+    pre.replaceChildren(...lines.map((ln, i) => {
       const d = document.createElement("div");
       d.textContent = ln;
-      if (/ (ERROR|CRITICAL) /.test(ln)) d.className = "err";
+      if (i >= s.log.length) d.className = "out";
+      else if (/ (ERROR|CRITICAL) /.test(ln)) d.className = "err";
       else if (/ WARNING /.test(ln)) d.className = "warn";
       return d;
     }));
@@ -115,6 +135,7 @@
   function render(s) {
     last = s;
     renderRunner(s.runner);
+    renderFailed(s);
     renderHealth(s);
     renderUpdate(s);
     renderLog(s);
