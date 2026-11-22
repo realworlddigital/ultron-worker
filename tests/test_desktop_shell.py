@@ -396,3 +396,18 @@ def test_runner_reports_an_unwritable_state_dir_instead_of_a_bare_traceback(
     monkeypatch.setenv("ULTRON_BACKBONE_KEY", "test-key")
     assert main(["--config", str(cfg), "--check"]) == 3
     assert capsys.readouterr().err.startswith("startup: FileExistsError")
+
+
+def test_runner_output_file_stays_bounded(tmp_path, monkeypatch) -> None:
+    from ultron_worker.desktop import supervisor
+
+    monkeypatch.setattr(supervisor, "OUTPUT_FILE_MAX", 1000)
+    out_log = tmp_path / "out.log"
+    proc = RunnerProcess(lambda: ["x"], output_path=out_log)
+    proc._open_output()
+    for i in range(500):
+        proc._note(f"line {i:04d} " + "x" * 40)
+    proc._close_output()
+    assert out_log.stat().st_size <= 1000 + 60
+    assert (tmp_path / "out.log.1").stat().st_size <= 1000 + 60
+    assert "line 0499" in out_log.read_text()

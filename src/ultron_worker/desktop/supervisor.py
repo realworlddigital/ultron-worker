@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import re
 import subprocess
 import threading
@@ -133,6 +134,16 @@ class RunnerProcess:
             with contextlib.suppress(OSError, ValueError):
                 self._out_file.write(line + "\n")
                 self._out_file.flush()
+                if self._out_file.tell() > OUTPUT_FILE_MAX:
+                    self._rotate_output()
+
+    def _rotate_output(self) -> None:
+        """Keep one previous file, so a chatty runner can't fill the disk between restarts."""
+        assert self.output_path is not None and self._out_file is not None
+        self._out_file.close()
+        self._out_file = None
+        os.replace(self.output_path, self.output_path.with_name(self.output_path.name + ".1"))
+        self._out_file = open(self.output_path, "a", encoding="utf-8")  # noqa: SIM115
 
     def _read(self, proc: subprocess.Popen) -> None:
         assert proc.stdout is not None
