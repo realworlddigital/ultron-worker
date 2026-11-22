@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .. import runlock
+from .. import COMMIT_ENV, __version__, runlock
 from ..sharedfile import open_shared
 from . import health, update, winenv
 from .autostart import Autostart
@@ -94,7 +94,10 @@ class App:
     def child_env(self) -> dict[str, str]:
         """What the runner and its --check get: the user's environment with a fresh PATH and
         the active venv's Scripts first (as an activated venv in PowerShell has it)."""
-        return winenv.child_env(prepend=[venv_python(self.install.venv).parent])
+        env = winenv.child_env(prepend=[venv_python(self.install.venv).parent])
+        if self.install.sha:  # the runner reports it beside its version (log, heartbeat)
+            env[COMMIT_ENV] = self.install.sha
+        return env
 
     def child_cwd(self) -> Path | None:
         return self.install.root if self.install.root.is_dir() else None
@@ -379,6 +382,7 @@ class App:
                 "enabled": self.autostart.enabled(),
             },
             "installed": {
+                "version": __version__,
                 "sha": self.install.sha,
                 "venv": str(self.install.venv),
                 "repo": str(self.install.repo) if self.install.repo else None,

@@ -28,7 +28,7 @@
 
   function render(s) {
     const r = s.runner, c = s.current;
-    $("host").textContent = `${r.host} · ${r.actor} · v${r.version}`;
+    $("host").textContent = `${r.host} · ${r.actor} · v${r.version}${r.commit ? ` · ${r.commit}` : ""}`;
     $("activity-word").textContent = r.activity.replace(/-/g, " ");
     pill($("pill-activity"), r.activity, r.activity);
     pill($("pill-conn"), r.connection, r.connection === "online" ? "backbone online" : `backbone ${r.connection}`);

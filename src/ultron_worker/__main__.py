@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import __version__, jobs
+from . import __version__, commit, jobs
 from .config import Config, ConfigError, load
 from .gui import start_gui
 from .runlock import ALREADY_RUNNING, RunnerLock, holder
@@ -95,6 +95,7 @@ def _logging(state_dir: Path, *, to_file: bool = True) -> str | None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="ultron-runner", description=__doc__)
+    ap.add_argument("--version", action="version", version=f"ultron-runner {__version__}")
     ap.add_argument("--config", required=True)
     ap.add_argument("--no-gui", action="store_true", help="run headless (no localhost GUI)")
     ap.add_argument("--once", action="store_true", help="one poll (runs a job inline), then exit")
@@ -152,8 +153,14 @@ def _acquire(lock: RunnerLock, log: logging.Logger) -> bool:
         return True
 
 
+def version_line() -> str:
+    """``ultron-runner <version>``, plus ``(<short sha>)`` when the desktop app passed it."""
+    sha = commit()
+    return f"ultron-runner {__version__}" + (f" ({sha})" if sha else "")
+
+
 def _run(args: argparse.Namespace, cfg: Config, runner: Runner, log: logging.Logger) -> int:
-    log.info("ultron-runner %s as %s; job kinds %s", __version__, cfg.actor, jobs.kinds())
+    log.info("%s as %s; job kinds %s", version_line(), cfg.actor, jobs.kinds())
     if args.check:
         return _check(runner)
     if args.once:
@@ -192,6 +199,7 @@ def _check(runner: Runner) -> int:
     from .jobs.transcribe import available
 
     ok = True
+    print(f"version: {version_line()}")
     try:
         runner._verify_identity()
         print(f"backbone: OK, key is actor {runner.cfg.actor!r}")

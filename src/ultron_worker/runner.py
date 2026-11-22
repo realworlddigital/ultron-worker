@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Any
 
-from . import __version__, jobs
+from . import __version__, commit, jobs
 from .backbone import Backbone, BackboneError, BackboneUnavailable, ScopeViolation
 from .config import Config
 from .jobs.base import ItemFailed, ItemRetry, JobContext, JobError, JobSpec, JobStopped, WorkItem
@@ -73,6 +73,7 @@ class Runner:
             version=__version__,
             poll_seconds=cfg.poll_seconds,
         )
+        self.board.set(commit=commit())
         self.background = background
         self.stop = threading.Event()
         self.poll_now = threading.Event()
@@ -423,6 +424,7 @@ class Runner:
                 host=self.cfg.host_name,
                 detail={
                     "version": __version__,
+                    "commit": commit(),
                     "task_id": cur.get("task_id"),
                     "done": cur.get("done"),
                     "total": cur.get("total"),

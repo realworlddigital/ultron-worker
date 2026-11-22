@@ -174,6 +174,16 @@ as the current job, with live progress and the file being processed. Press **Sto
 **Start**, and it resumes with no duplicate lines in `tags.jsonl`. When it finishes, the card is
 `done` with an `ultron.completed` event and the job shows in Recently Done with its output path.
 
+## Versioning
+
+The version lives in `pyproject.toml` only (`ultron_worker.__version__` reads it). It shows in the
+runner's startup log line, the status GUI header, `--check` (`version:` line), `ultron-runner
+--version`, the desktop app footer next to the installed commit, and the runner's backbone
+heartbeat (`system/status_ultron-runner`: `detail.version`, plus `detail.commit` when the desktop
+app started the runner). Every merged PR bumps it, pre-1.0 semver: PATCH for hotfixes and bug
+fixes, MINOR for new capability (a new job kind, a record format change), MAJOR for contract
+breaks. The PR description states its bump and adds a line to `CHANGELOG.md`.
+
 ## Development
 
 ```bash
