@@ -8,6 +8,7 @@ runner stops with it, so a relaunched shell never finds an orphan runner polling
 The child's stdout and stderr are captured (and appended to ``output_path``): a runner that dies
 before it opens its own log still shows why in the app. A crashed runner is revived with a
 backoff a few times; if it keeps crashing the supervisor gives up (``failed``) until Start.
+An exit code in ``final_codes`` (another runner already holds the state dir) is not retried.
 """
 
 from __future__ import annotations
@@ -44,8 +45,10 @@ class RunnerProcess:
         stop_timeout: float = 90.0,
         cwd: Path | None = None,
         env: Callable[[], dict[str, str]] | None = None,
+        final_codes: frozenset[int] = frozenset(),
     ) -> None:
         self.command = command
+        self.final_codes = final_codes
         self.output_path = output_path
         self.stop_timeout = stop_timeout
         self.cwd = cwd
@@ -215,6 +218,10 @@ class RunnerProcess:
             self._close_output()
 
     def _crashed(self, now: float) -> None:
+        if self.exit_code in self.final_codes:  # retrying can't help: say why, once
+            self.gave_up, self._revive_at = True, None
+            log.error("runner exited with code %s; not restarting it (see the log)", self.exit_code)
+            return
         if time.monotonic() - self._started_mono >= STABLE_SECONDS:
             self.crashes = 0  # it ran fine for a while: this is a new problem
         if self.crashes >= len(BACKOFF):

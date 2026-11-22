@@ -122,6 +122,14 @@ starts the runner as its child and owns it:
   Their stdout/stderr is captured: a runner that dies before opening `ultron.log` still shows its
   error in the log pane (as `[runner output]` lines), and it is kept in
   `state\ultron-runner.output.log`.
+- **The log file can't stop the runner.** `ultron.log` is opened (and tailed by the log pane)
+  with read, write and delete sharing, so no reader blocks the writer or its rotation. If the
+  runner still can't open it, it retries briefly, then logs to stderr only (shown in the log pane
+  as `[no log file]` lines, with the reason) and keeps running. `--check` doesn't write it.
+- **One runner per state dir.** A running runner holds a lock on `state\runner.pid` (the OS frees
+  it when the runner exits, even if killed). Start first checks for a live runner (lock held or
+  status GUI answering) and reports it as **outside app** with its pid instead of starting a
+  rival; a second runner started by hand exits with code 4 and says which pid holds the lock.
 - **Health lights.** Backbone identity, queue and Ollama, from the runner's own `--check`. They
   refresh after every start, every 10 minutes, and when you press **Re-check**. If the check itself
   can't run (won't start, crashes before reporting, times out), the three lights are replaced by
@@ -136,7 +144,9 @@ starts the runner as its child and owns it:
   (`-RegisterTask` is retired).
 - **Updates.** On launch and on **Check for updates**, the app compares the installed commit with
   `origin/main` and shows both short SHAs and subjects. git is found on PATH, then on the
-  registry's current PATH, then in `Program Files\Git` and `%LOCALAPPDATA%\Programs\Git`. An
+  registry's current PATH, then in `Program Files\Git`, `%LOCALAPPDATA%\Programs\Git`, winget
+  (`%LOCALAPPDATA%\Microsoft\WinGet\Links` and `Packages\Git.Git_*`), Scoop, Chocolatey
+  (`%ProgramData%\chocolatey\bin`), GitHub Desktop's bundled git and Visual Studio's. An
   install recorded without its commit takes the clone's HEAD (read from `.git` if git can't run). Nothing updates without your click. If a job
   is running, **Update** waits for it to finish (or **Update now**: checkpointing resumes the job).
   It fast-forwards the checkout, builds a fresh venv in `venvs\<sha>`, and runs `--check` there.
