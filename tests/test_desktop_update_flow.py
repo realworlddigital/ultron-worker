@@ -20,6 +20,7 @@ TARGET = update.Commit("b" * 40, "trivial change")
 class FakeRunner:
     def __init__(self) -> None:
         self.wanted, self.alive, self.events = True, True, []
+        self.exit_code, self.gave_up = None, False
 
     def running(self) -> bool:
         return self.alive

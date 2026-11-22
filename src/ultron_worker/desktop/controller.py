@@ -15,6 +15,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .. import runlock
+from ..sharedfile import open_shared
 from . import health, update, winenv
 from .autostart import Autostart
 from .layout import Install, RunnerSettings, now_iso, repo_head, venv_python
@@ -28,8 +30,8 @@ LOG_TAIL_LINES = 250
 
 
 def tail(path: Path, max_bytes: int = LOG_TAIL_BYTES, max_lines: int = LOG_TAIL_LINES) -> list[str]:
-    try:
-        with open(path, "rb") as fh:
+    try:  # share-friendly: the tail must never block the runner opening or rotating its log
+        with open_shared(path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
             size = fh.tell()
             fh.seek(max(0, size - max_bytes))
@@ -70,6 +72,7 @@ class App:
             output_path=self.settings.state_dir / "ultron-runner.output.log",
             cwd=self.child_cwd(),
             env=self.child_env,
+            final_codes=frozenset({runlock.ALREADY_RUNNING}),
         )
         self._lock = threading.Lock()
         self.health: health.HealthReport | None = None
@@ -80,6 +83,7 @@ class App:
         self._cancel = threading.Event()
         self.flash: dict[str, str] | None = None
         self.external_runner = False
+        self.external_pid: int | None = None
         self._stop = threading.Event()
         self._next_health = 0.0
         self.backfill_sha()
@@ -158,16 +162,31 @@ class App:
         finally:
             conn.close()
 
+    def lock_holder(self, wait: float = 0.0) -> int | None:
+        """The pid of a runner holding the state dir's lock, if one is alive."""
+        with contextlib.suppress(OSError):
+            return runlock.holder(self.settings.state_dir, wait=wait)
+        return None
+
+    def find_external(self) -> bool:
+        """Is a runner the app didn't start alive (its lock is held, or its status GUI
+        answers)? Recorded in ``external_runner`` / ``external_pid``."""
+        # A runner killed a moment ago may still hold its lock for an instant on Windows.
+        pid = self.lock_holder(wait=2.0)
+        self.external_pid = pid if pid and pid > 0 else None
+        self.external_runner = pid is not None or self.runner_state() is not None
+        return self.external_runner
+
     def start_runner(self) -> dict[str, Any]:
-        if not self.runner.running() and self.runner_state() is not None:
-            self.external_runner = True
-            log.warning("a runner started outside the app is serving the status GUI; not starting")
+        if not self.runner.running() and self.find_external():
+            who = f"(pid {self.external_pid}) " if self.external_pid else ""
+            log.warning("a runner started outside the app %sis running; not starting", who)
             return {
                 "ok": False,
-                "error": "A runner started outside the app is already running. Stop it (close "
-                "its PowerShell window, or Stop-ScheduledTask 'Ultron Runner'), then press Start.",
+                "error": f"A runner started outside the app {who}is already running. Stop it "
+                "(close its PowerShell window, or Stop-ScheduledTask 'Ultron Runner'), then "
+                "press Start.",
             }
-        self.external_runner = False
         started = self.runner.start()
         self._next_health = time.monotonic() + 8  # lights refresh shortly after a start
         return {"ok": True, "started": started}
@@ -332,14 +351,20 @@ class App:
 
     # ---- the control page --------------------------------------------------------
     def status(self) -> dict[str, Any]:
-        rstate = self.runner_state() if self.runner.running() or self.external_runner else None
-        if self.external_runner and rstate is None and not self.runner.running():
-            self.external_runner = False  # the outside runner went away: Start works again
+        running = self.runner.running()
+        refused = self.runner.exit_code == runlock.ALREADY_RUNNING and self.runner.gave_up
+        if not running and (self.external_runner or refused):
+            pid = self.lock_holder()
+            self.external_pid = pid if pid and pid > 0 else None
+            # Gone (lock free, GUI silent): Start works again.
+            self.external_runner = pid is not None or self.runner_state() is not None
+        rstate = self.runner_state() if running or self.external_runner else None
         h = self.health
         return {
             "runner": {
                 **self.runner.status(),
                 "external": self.external_runner,
+                "external_pid": self.external_pid,
                 "activity": (rstate or {}).get("runner", {}).get("activity"),
                 "current": (rstate or {}).get("current"),
             },
@@ -367,7 +392,7 @@ class App:
         if action == "start":
             return self.start_runner()
         if action == "stop":
-            self.external_runner = False
+            self.external_runner, self.external_pid = False, None
             return {"ok": True, "stopped": self.runner.stop()}
         if action == "restart":
             how = self.runner.stop()

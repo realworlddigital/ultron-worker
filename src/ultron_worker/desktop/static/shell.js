@@ -31,7 +31,7 @@
   function renderRunner(r) {
     const map = { running: "ok", stopping: "busy", crashed: "bad", failed: "bad", stopped: "bad" };
     let label = r.state, detail = r.pid ? `pid ${r.pid}, started ${ago(r.started_at)}` : "";
-    if (r.external) { label = "outside app"; detail = "a runner started outside the app is running"; }
+    if (r.external) { label = "outside app"; detail = `a runner started outside the app is running${r.external_pid ? ` (pid ${r.external_pid})` : ""}`; }
     else if (r.state === "running" && r.activity) label = r.activity.replace(/-/g, " ");
     else if (r.state === "crashed") label = `crashed (exit ${r.exit_code}), retry ${r.crashes}/${r.max_restarts} in ${r.restart_in}s`;
     else if (r.state === "failed") { label = "will not start - see log"; detail = `exited with code ${r.exit_code} ${r.crashes + 1} times in a row; press Start to try again`; }

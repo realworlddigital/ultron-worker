@@ -110,3 +110,50 @@ def test_repo_head_without_git_reads_the_git_files(
     git(repo, "checkout", "-q", "--detach")
     assert layout.repo_head(repo) == head  # detached HEAD
     assert layout.repo_head(tmp_path / "nope") is None
+
+
+def _touch(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("")
+    return path
+
+
+@pytest.mark.parametrize(
+    "where",
+    [
+        "local/Microsoft/WinGet/Links/git.exe",
+        "local/Microsoft/WinGet/Packages/Git.Git_Microsoft.Winget.Source_8wekyb3d8bbwe/cmd/git.exe",
+        "local/GitHubDesktop/app-3.4.9/resources/app/git/cmd/git.exe",
+        "programdata/chocolatey/bin/git.exe",
+        "home/scoop/apps/git/current/cmd/git.exe",
+        "home/scoop/shims/git.exe",
+    ],
+)
+def test_find_git_in_package_manager_and_bundled_locations(tmp_path: Path, where: str) -> None:
+    exe = _touch(tmp_path / where)
+    env = {
+        "PATH": "",
+        "PROGRAMFILES": str(tmp_path / "pf"),
+        "LOCALAPPDATA": str(tmp_path / "local"),
+        "USERPROFILE": str(tmp_path / "home"),
+        "PROGRAMDATA": str(tmp_path / "programdata"),
+    }
+    assert exe in winenv.git_candidates(env)
+    assert winenv.find_git(env, registry=no_registry, which=fake_which({})) == str(exe)
+
+
+def test_find_git_prefers_git_for_windows_and_the_newest_github_desktop(tmp_path: Path) -> None:
+    desktop = tmp_path / "local" / "GitHubDesktop"
+    tail = Path("resources/app/git/cmd/git.exe")
+    old, new = _touch(desktop / "app-3.4.9" / tail), _touch(desktop / "app-3.10.1" / tail)
+    env = {"PATH": "", "LOCALAPPDATA": str(tmp_path / "local"), "PROGRAMFILES": str(tmp_path)}
+    cands = winenv.git_candidates(env)
+    assert cands.index(new) < cands.index(old)
+    gfw = _touch(tmp_path / "Git" / "cmd" / "git.exe")
+    assert winenv.find_git(env, registry=no_registry, which=fake_which({})) == str(gfw)
+
+
+def test_git_candidates_without_a_profile_or_folders(tmp_path: Path) -> None:
+    cands = winenv.git_candidates({"PATH": "", "LOCALAPPDATA": str(tmp_path / "missing")})
+    assert all(isinstance(c, Path) for c in cands)
+    assert "winget" in winenv.GIT_NOT_FOUND and "GitHub Desktop" in winenv.GIT_NOT_FOUND

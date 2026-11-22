@@ -82,11 +82,27 @@ def child_env(
     return env
 
 
+def _version_key(name: str) -> tuple[tuple[int, ...], str]:
+    """The numbers in a folder name (``app-3.4.9`` -> (3, 4, 9)), for newest-first sorting."""
+    nums = tuple(int(n) for n in "".join(c if c.isdigit() else " " for c in name).split())
+    return nums, name
+
+
+def _newest_first(base: Path, pattern: str) -> list[Path]:
+    """``base.glob(pattern)``, the newest versioned folder first; [] if ``base`` can't be read."""
+    try:
+        found = list(base.glob(pattern))
+    except OSError:
+        return []
+    return sorted(found, key=lambda p: _version_key(p.relative_to(base).parts[0]), reverse=True)
+
+
 def git_candidates(env: Mapping[str, str] | None = None) -> list[Path]:
-    """Where Git for Windows lands when it isn't on PATH (machine-wide, per user, scoop)."""
+    """Where git lands when it isn't on PATH: Git for Windows (machine-wide and per user),
+    winget, Scoop, Chocolatey, then the gits bundled with GitHub Desktop and Visual Studio."""
     env = os.environ if env is None else env
     get = {k.upper(): v for k, v in env.items()}.get
-    bases = [
+    program_files = [
         get("PROGRAMFILES"),
         get("PROGRAMW6432"),
         get("PROGRAMFILES(ARM)"),
@@ -94,14 +110,33 @@ def git_candidates(env: Mapping[str, str] | None = None) -> list[Path]:
         r"C:\Program Files",
     ]
     out: list[Path] = []
-    for base in bases:
+    for base in program_files:
         if base:
             out += [Path(base) / "Git" / "cmd" / "git.exe", Path(base) / "Git" / "bin" / "git.exe"]
-    if get("LOCALAPPDATA"):
-        local = Path(get("LOCALAPPDATA")) / "Programs" / "Git"
-        out += [local / "cmd" / "git.exe", local / "bin" / "git.exe"]
-    if get("USERPROFILE"):
-        out.append(Path(get("USERPROFILE")) / "scoop" / "shims" / "git.exe")
+    local = Path(get("LOCALAPPDATA")) if get("LOCALAPPDATA") else None
+    home = Path(get("USERPROFILE")) if get("USERPROFILE") else None
+    program_data = Path(get("PROGRAMDATA") or r"C:\ProgramData")
+    if local:
+        per_user = local / "Programs" / "Git"
+        out += [per_user / "cmd" / "git.exe", per_user / "bin" / "git.exe"]
+        winget = local / "Microsoft" / "WinGet"
+        out.append(winget / "Links" / "git.exe")
+        out += _newest_first(winget / "Packages", "Git.Git_*/cmd/git.exe")
+        out += _newest_first(winget / "Packages", "Git.Git_*/bin/git.exe")
+    scoops = [Path(get("SCOOP")) if get("SCOOP") else None, home / "scoop" if home else None]
+    scoops += [Path(get("SCOOP_GLOBAL")) if get("SCOOP_GLOBAL") else None, program_data / "scoop"]
+    for scoop in filter(None, scoops):
+        out += [scoop / "apps" / "git" / "current" / "cmd" / "git.exe", scoop / "shims" / "git.exe"]
+    if get("CHOCOLATEYINSTALL"):
+        out.append(Path(get("CHOCOLATEYINSTALL")) / "bin" / "git.exe")
+    out.append(program_data / "chocolatey" / "bin" / "git.exe")
+    if local:
+        out += _newest_first(local / "GitHubDesktop", "app-*/resources/app/git/cmd/git.exe")
+    vs_git = (
+        "*/*/Common7/IDE/CommonExtensions/Microsoft/TeamFoundation/Team Explorer/Git/cmd/git.exe"
+    )
+    for base in dict.fromkeys(filter(None, program_files)):
+        out += _newest_first(Path(base) / "Microsoft Visual Studio", vs_git)
     return list(dict.fromkeys(out))
 
 
@@ -142,6 +177,7 @@ def git_exe() -> str | None:
 
 
 GIT_NOT_FOUND = (
-    "git not found (looked on PATH, the registry PATH and the Git for Windows install folders):"
-    " install Git for Windows, or add git.exe to PATH"
+    "git not found (looked on PATH, the registry PATH, the Git for Windows install folders,"
+    " winget, Scoop, Chocolatey, GitHub Desktop and Visual Studio): install Git for Windows,"
+    " or add git.exe to PATH"
 )

@@ -395,7 +395,7 @@ def test_runner_reports_an_unwritable_state_dir_instead_of_a_bare_traceback(
     )
     monkeypatch.setenv("ULTRON_BACKBONE_KEY", "test-key")
     assert main(["--config", str(cfg), "--check"]) == 3
-    assert capsys.readouterr().err.startswith("startup: FileExistsError")
+    assert "startup: FileExistsError" in capsys.readouterr().err
 
 
 def test_runner_output_file_stays_bounded(tmp_path, monkeypatch) -> None:
