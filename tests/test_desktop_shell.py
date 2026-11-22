@@ -411,3 +411,20 @@ def test_runner_output_file_stays_bounded(tmp_path, monkeypatch) -> None:
     assert out_log.stat().st_size <= 1000 + 60
     assert (tmp_path / "out.log.1").stat().st_size <= 1000 + 60
     assert "line 0499" in out_log.read_text()
+
+
+def test_runner_output_keeps_writing_when_rotation_is_blocked(tmp_path, monkeypatch) -> None:
+    from ultron_worker.desktop import supervisor
+
+    def locked(*a, **k):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(supervisor, "OUTPUT_FILE_MAX", 1000)
+    monkeypatch.setattr(supervisor.os, "replace", locked)
+    out_log = tmp_path / "out.log"
+    proc = RunnerProcess(lambda: ["x"], output_path=out_log)
+    proc._open_output()
+    for i in range(500):
+        proc._note(f"line {i:04d} " + "x" * 40)
+    proc._close_output()
+    assert out_log.stat().st_size <= 1000 + 60 and "line 0499" in out_log.read_text()

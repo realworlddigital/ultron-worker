@@ -142,8 +142,15 @@ class RunnerProcess:
         assert self.output_path is not None and self._out_file is not None
         self._out_file.close()
         self._out_file = None
-        os.replace(self.output_path, self.output_path.with_name(self.output_path.name + ".1"))
-        self._out_file = open(self.output_path, "a", encoding="utf-8")  # noqa: SIM115
+        try:
+            os.replace(self.output_path, self.output_path.with_name(self.output_path.name + ".1"))
+            mode = "a"
+        except OSError:  # e.g. .1 held open on Windows: start this file over instead
+            mode = "w"
+        try:
+            self._out_file = open(self.output_path, mode, encoding="utf-8")  # noqa: SIM115
+        except OSError as exc:
+            log.warning("can't write runner output to %s: %s", self.output_path, exc)
 
     def _read(self, proc: subprocess.Popen) -> None:
         assert proc.stdout is not None
