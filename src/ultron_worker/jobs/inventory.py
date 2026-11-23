@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -239,6 +240,8 @@ def _walk(spec: JobSpec, ctx: JobContext) -> dict[str, Any]:
     folders: dict[tuple[str, str], list[dict[str, Any]]] = {}
     seen: set[tuple[str, str]] = set()
     unreadable: list[str] = []
+    # The walk runs in plan, before the runner's per-item budget checks: it keeps its own.
+    deadline = time.monotonic() + spec.budget_minutes * 60
     for raw in spec.inputs:
         top = ctx.allowed(raw, what="input")
         if roots.relativize(top) is None:
@@ -247,6 +250,12 @@ def _walk(spec: JobSpec, ctx: JobContext) -> dict[str, Any]:
         while stack:
             if ctx.stop.is_set():
                 raise JobStopped
+            if time.monotonic() > deadline:
+                raise JobError(
+                    f"wall-clock budget of {spec.budget_minutes:g} min spent walking the inputs "
+                    f"({len(seen)} media files so far); raise data.job.budget_minutes and "
+                    "re-dispatch"
+                )
             path = stack.pop()
             # per folder, not per input: a nested media root takes over, as in vision_tag
             found = roots.relativize(path)
