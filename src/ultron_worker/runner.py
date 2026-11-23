@@ -53,6 +53,9 @@ BROKEN_AFTER = 5
 WATCH_STEP = 5.0  # sleep-watch granularity, seconds
 BUDGET_GRACE = WATCH_STEP + 1  # lets the watch report a just-ended suspend first
 OUTBOX_LIMIT = 200  # queued job events kept while the backbone is unreachable (oldest dropped)
+# Flushes (each after a good poll) an event may fail before it's dropped, so one event the
+# backbone keeps failing can't hold the queue, or the card reports waiting on it, forever.
+EVENT_ATTEMPTS = 5
 
 
 @dataclass
@@ -62,6 +65,7 @@ class _Event:
     summary: str
     severity: str = "routine"
     data: dict[str, Any] = field(default_factory=dict)
+    attempts: int = 0
 
 
 class Outbox:
@@ -82,6 +86,10 @@ class Outbox:
         with self._lock:
             return len(self._items)
 
+    def pending(self, tid: str) -> int:
+        with self._lock:
+            return sum(1 for e in self._items if e.tid == tid)
+
     def put(self, event: _Event, *, coalesce: bool = False) -> None:
         with self._lock:
             if coalesce and event.action == "progress":
@@ -96,7 +104,8 @@ class Outbox:
 
     def flush(self, send: Any) -> int:
         """Send queued events oldest first; stop (keeping the rest) at the first
-        :class:`BackboneUnavailable`, which propagates. A refused event is logged and dropped.
+        :class:`BackboneUnavailable`, which propagates; an event that has failed that way
+        ``EVENT_ATTEMPTS`` times is dropped. A refused event is logged and dropped.
         Returns how many were delivered."""
         sent = 0
         with self._flushing:
@@ -108,6 +117,20 @@ class Outbox:
                 try:
                     send(event)
                     sent += 1
+                except BackboneUnavailable:
+                    event.attempts += 1
+                    if event.attempts >= EVENT_ATTEMPTS:
+                        log.warning(
+                            "event ultron.%s for %s dropped after %s failed sends",
+                            event.action,
+                            event.tid,
+                            event.attempts,
+                        )
+                        with self._lock:
+                            if self._items and self._items[0] is event:
+                                self._items.popleft()
+                                self.dropped += 1
+                    raise
                 except BackboneError as exc:
                     log.warning("event ultron.%s for %s refused: %s", event.action, event.tid, exc)
                 with self._lock:
@@ -537,10 +560,8 @@ class Runner:
                 lambda: self.bb.transition(tid, "needs_david", note=job["error"][:500]),
             ]
         self.flush_outbox()  # the job's own events go out before its completion
-        if len(self.outbox):
-            log.warning(
-                "report for %s deferred: %s job event(s) still queued", tid, len(self.outbox)
-            )
+        if queued := self.outbox.pending(tid):
+            log.warning("report for %s deferred: %s of its event(s) still queued", tid, queued)
             return
         try:
             for step, call in enumerate(calls):

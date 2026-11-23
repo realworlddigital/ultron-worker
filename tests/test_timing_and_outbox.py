@@ -295,3 +295,27 @@ def test_runner_gui_cut_short_does_not_kill_the_monitor(tmp_path, monkeypatch) -
     monkeypatch.setattr(controller.http.client, "HTTPConnection", Conn)
     assert app.settings.gui_enabled
     assert app.runner_state() is None and app.keep_awake() is False
+
+
+def test_an_event_that_keeps_failing_is_dropped_and_stops_blocking(make, cfg) -> None:
+    from ultron_worker.runner import EVENT_ATTEMPTS
+
+    runner, bb, _ = make()
+    runner.outbox.put(_Event("cancelled", "gone", "a card the backbone keeps failing"))
+    runner.outbox.put(_Event("progress", "t1", "behind it"))
+    sends = {"n": 0}
+
+    def send(e: _Event) -> None:
+        if e.tid == "gone":
+            sends["n"] += 1
+            raise BackboneUnavailable("backbone 500")
+
+    for _ in range(EVENT_ATTEMPTS - 1):
+        with pytest.raises(BackboneUnavailable):
+            runner.outbox.flush(send)
+    assert runner.outbox.pending("t1") == 1
+    with pytest.raises(BackboneUnavailable):
+        runner.outbox.flush(send)  # the last allowed attempt drops it
+    assert runner.outbox.pending("gone") == 0 and runner.outbox.dropped == 1
+    assert runner.outbox.flush(send) == 1 and len(runner.outbox) == 0
+    assert sends["n"] == EVENT_ATTEMPTS
