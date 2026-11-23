@@ -272,3 +272,15 @@ def test_the_cli_sweeps_before_running_but_check_does_not(tmp_path, monkeypatch)
     calls.clear()
     assert cli.main(["--config", str(cfg_path), "--check"]) == 0
     assert calls == []
+
+
+def test_seeded_items_keep_failing_new_files_from_looking_like_a_broken_job(
+    make, library, monkeypatch
+) -> None:
+    runner, bb, _ = make()
+    tag(runner, bb, "t1", library)
+    for i in range(6):
+        (library / f"v{i}.mp4").write_bytes(b"not a video")
+    monkeypatch.setattr("ultron_worker.jobs.vision.shutil.which", lambda name: None)
+    tag(runner, bb, "t2", library)  # no ffmpeg: 6 videos skipped, 5 photos seeded
+    assert "5 tagged, 6 skipped" in note(bb, "t2")
