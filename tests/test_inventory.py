@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from ultron_worker.jobs import inventory
+from ultron_worker.jobs.base import JobContext, JobSpec
 from ultron_worker.jobs.inventory import _fit
 
 from .conftest import PNG
@@ -42,11 +44,12 @@ def run(make, cfg, raw, tmp_path):
     """run(inputs, **params) -> (status, finished-note body, output records, sidecar)."""
     config = replace(cfg, media_roots=(("GUILD-RAW-Media", str(raw)),))
 
-    def _run(inputs, *, status="done", **params):
-        runner, bb, ollama = make(config=config)
-        out = tmp_path / "out" / "inventory.jsonl"
+    def _run(inputs, *, status="done", output=None, roots=(), budget=600, **params):
+        cfg_ = replace(config, media_roots=config.media_roots + tuple(roots))
+        runner, bb, ollama = make(config=cfg_)
+        out = output or tmp_path / "out" / "inventory.jsonl"
         bb.add("t1", kind="folder_inventory", model=None, inputs=inputs, output=str(out),
-               params=params)  # fmt: skip
+               params=params, budget_minutes=budget)  # fmt: skip
         runner.tick()
         assert bb.tasks["t1"]["status"] == status, bb.events
         assert ollama.calls == []  # never touches a model
@@ -187,3 +190,54 @@ def test_long_folder_lists_are_cut_to_the_note_budget() -> None:
         == f"- ... {500 - len(kept) + 1} more folder(s): full list in /x/inv.unindexed.json"
     )
     assert _fit(lines[:3], 1000, Path("/x")) == lines[:3]
+
+
+def test_junctions_are_not_descended(run, raw, monkeypatch) -> None:
+    monkeypatch.setattr(inventory, "_reparse_point", lambda e: e.name == "Dump")
+    _, _, rows, _ = run([str(raw)])
+    assert not [r for r in rows if r["rel"].startswith("Dump/")] and len(rows) == 5
+
+
+def test_nested_media_root_takes_over_its_folders(run, raw) -> None:
+    nested = ("NATICK", str(raw / NATICK))
+    _, _, rows, _ = run([str(raw), "NATICK"], roots=[nested])
+    assert len(rows) == 7  # selecting both roots still counts each file once
+    assert {(r["root"], r["rel"]) for r in rows if r["root"] == "NATICK"} == {
+        ("NATICK", "C001.MP4"),
+        ("NATICK", "C002.mov"),
+        ("NATICK", "still.jpg"),
+        ("NATICK", "CARD2/frame.png"),
+    }
+
+
+def test_finalize_reports_this_walk_not_stale_checkpoints(cfg, raw, tmp_path) -> None:
+    roots = replace(cfg, media_roots=(("GUILD-RAW-Media", str(raw)),)).roots()
+    ctx = JobContext(task_id="t", ollama=None, allowed_roots=(tmp_path,), work_dir=tmp_path,
+                     media_roots=roots)  # fmt: skip
+    out = tmp_path / "inv.jsonl"
+    spec = JobSpec("folder_inventory", (str(raw / "Dump"),), "", str(out), 10)
+    kind = inventory.FolderInventory()
+    (raw / "Dump" / "new.mp4").write_bytes(b"x")
+    items = kind.plan(spec, ctx)
+    stale = [(it, {"root": "GUILD-RAW-Media", "folder": "Dump", "files": []}) for it in items]
+    kind.finalize(spec, stale, ctx)
+    rels = [json.loads(x)["rel"] for x in out.read_text().splitlines()]
+    assert rels == ["Dump/clip.mkv", "Dump/new.mp4", "Dump/pic.webp"]
+
+
+def test_walk_keeps_to_the_budget(run, raw, monkeypatch) -> None:
+    ticks = iter(range(0, 10**9, 3600))
+    monkeypatch.setattr(inventory, "time", type("T", (), {"monotonic": lambda: next(ticks)}))
+    _, failed, _, _ = run([str(raw)], status="needs_david", budget=60)
+    assert "budget of 60 min spent walking" in failed[0]["data"]["error"]
+
+
+def test_output_never_overwrites_the_catalog(run, raw) -> None:
+    index = [{"root": "GUILD-RAW-Media", "relpath": "Dump/clip.mkv", "caption": "c", "tags": ["a"]}]
+    _catalog(raw, [{"root": "GUILD-RAW-Media", "folder": "Dump", "index": "Dump/tags.jsonl"}],
+             {"Dump/tags.jsonl": index})  # fmt: skip
+    before = {p: p.read_text() for p in (raw / "_index" / "catalog.jsonl", raw / "Dump/tags.jsonl")}
+    for target in before:
+        _, failed, _, _ = run([str(raw)], status="needs_david", output=target)
+        assert "is a catalog file" in failed[0]["data"]["error"]
+    assert {p: p.read_text() for p in before} == before

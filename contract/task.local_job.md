@@ -38,7 +38,9 @@ root. Optional `params`: `exclude` (extra folder names to skip; `_index`, `@eaDi
 
 - **Output** (`.jsonl`): one record per media file (vision_tag's image + video extensions),
   `{"root": "GUILD-RAW-Media", "rel": "Guild Hall/2026-10-GH NATICK/C001.MP4",
-  "size_bytes": 123, "mtime": "<ISO UTC>", "media": "video"}`. Folder symlinks aren't followed.
+  "size_bytes": 123, "mtime": "<ISO UTC>", "media": "video"}`, keyed by each folder's innermost
+  media root (as vision_tag keys it). Folder symlinks and junctions aren't followed; the walk
+  keeps to `budget_minutes`. The output may not be the TOC, `all-tags.jsonl` or a listed index.
 - **Diff**: for each root walked, the TOC `<root>/_index/catalog.jsonl` is read (one JSON object
   per indexed folder: `{"root", "folder", "index", "files", "tagged", "skipped", "failed",
   "model", "updated_at"}`, `index` root-relative), then every folder index it lists. A file with
