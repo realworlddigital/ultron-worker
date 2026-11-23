@@ -44,6 +44,7 @@ SYSTEM_DIRS = frozenset(
 )  # fmt: skip
 NOTE_DETAIL_MAX = 3000  # the backbone keeps 4000 chars of a note; the headline needs the rest
 WALK_CACHE = "folder_inventory.walk"
+REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT
 
 
 def _join(folder: str, name: str) -> str:
@@ -211,6 +212,16 @@ def _excluded(spec: JobSpec) -> frozenset[str]:
     return SYSTEM_DIRS | {e.casefold() for e in extra}
 
 
+def _reparse_point(entry: os.DirEntry[str]) -> bool:
+    """A Windows junction (or other reparse point) passes ``is_dir(follow_symlinks=False)``
+    and could lead out of the allowed roots: never descended, like a folder symlink."""
+    try:
+        attrs = getattr(entry.stat(follow_symlinks=False), "st_file_attributes", 0)
+    except OSError:
+        return True
+    return bool(attrs & REPARSE_POINT)
+
+
 def _walk(spec: JobSpec, ctx: JobContext) -> dict[str, Any]:
     """Stat every media file under the inputs (os.scandir: on Windows/SMB the listing carries
     the size and mtime, so no extra round trip per file). Folder symlinks are not followed."""
@@ -240,7 +251,7 @@ def _walk(spec: JobSpec, ctx: JobContext) -> dict[str, Any]:
                 rel = _join(folder, entry.name)
                 try:
                     if entry.is_dir(follow_symlinks=False):
-                        if entry.name.casefold() not in skip:
+                        if entry.name.casefold() not in skip and not _reparse_point(entry):
                             stack.append((entry.path, root, rel))
                         continue
                     suffix = os.path.splitext(entry.name)[1].lower()
