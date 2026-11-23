@@ -6,4 +6,4 @@ only ever calls out (HTTPS polling of the backbone, localhost Ollama); its statu
 to localhost and is a view, never a control plane.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

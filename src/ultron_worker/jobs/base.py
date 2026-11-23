@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import tempfile
 import threading
 from collections.abc import Iterable
@@ -16,6 +17,7 @@ from ..media import MediaRoots
 from ..ollama import Ollama
 
 KEY_MAX = 1000
+SCRATCH_DIR = "frames"  # <work_dir>/frames/<item id>: per-item scratch, removed after the item
 
 
 class JobStopped(Exception):
@@ -148,6 +150,13 @@ class JobKind:
     ) -> Output:
         raise NotImplementedError
 
+    def seed(
+        self, spec: JobSpec, items: list[WorkItem], ctx: JobContext
+    ) -> dict[str, dict[str, Any]]:
+        """Results already known from outside this card's checkpoint (e.g. the job's existing
+        output index), by item key. Seeded items count as done and never reach the model."""
+        return {}
+
     def settled(self, result: dict[str, Any]) -> bool:
         """Whether a checkpointed result is final. Unsettled ones (marked ``failed``) are
         re-run when the job resumes."""
@@ -186,6 +195,27 @@ def iter_files(
             if key not in skip:
                 seen.setdefault(key, real)
     return [seen[k] for k in sorted(seen)]
+
+
+def sweep_scratch(jobs_dir: Path) -> int:
+    """Remove per-item scratch dirs (``<jobs_dir>/<task>/frames/<item>``) a hard kill left
+    behind; returns how many. Only safe while no job runs: call it at runner startup, under the
+    runner lock."""
+    removed = 0
+    try:
+        scratch_dirs = [d for d in jobs_dir.glob(f"*/{SCRATCH_DIR}") if d.is_dir()]
+    except OSError:
+        return 0
+    for scratch in scratch_dirs:
+        with contextlib.suppress(OSError):
+            for d in list(scratch.iterdir()):
+                if d.is_dir():
+                    shutil.rmtree(d, ignore_errors=True)
+                else:
+                    d.unlink()
+                removed += 1
+            scratch.rmdir()
+    return removed
 
 
 def file_key(path: Path) -> str:
