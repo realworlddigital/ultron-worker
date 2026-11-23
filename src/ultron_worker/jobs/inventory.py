@@ -233,14 +233,18 @@ def _walk(spec: JobSpec, ctx: JobContext) -> dict[str, Any]:
     unreadable: list[str] = []
     for raw in spec.inputs:
         top = ctx.allowed(raw, what="input")
-        found = roots.relativize(top)
-        if found is None:
+        if roots.relativize(top) is None:
             raise JobError(f"input {raw!r} is not under a named media root")
-        stack: list[tuple[str, str, str]] = [(str(top), found[0], found[1])]
+        stack = [str(top)]
         while stack:
             if ctx.stop.is_set():
                 raise JobStopped
-            path, root, folder = stack.pop()
+            path = stack.pop()
+            # per folder, not per input: a nested media root takes over, as in vision_tag
+            found = roots.relativize(path)
+            if found is None:
+                continue
+            root, folder = found
             try:
                 with os.scandir(path) as it:
                     entries = sorted(it, key=lambda e: e.name.casefold())
@@ -252,7 +256,7 @@ def _walk(spec: JobSpec, ctx: JobContext) -> dict[str, Any]:
                 try:
                     if entry.is_dir(follow_symlinks=False):
                         if entry.name.casefold() not in skip and not _reparse_point(entry):
-                            stack.append((entry.path, root, rel))
+                            stack.append(entry.path)
                         continue
                     suffix = os.path.splitext(entry.name)[1].lower()
                     if suffix not in exts or not entry.is_file():
