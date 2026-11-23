@@ -44,6 +44,9 @@ class FakeRunner:
     def tick(self) -> None:
         FakeRunner.ticks += 1
 
+    def sweep_scratch(self) -> int:
+        return 0
+
 
 def run_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: Path) -> int:
     monkeypatch.setenv("ULTRON_BACKBONE_KEY", "test-key")

@@ -156,6 +156,7 @@ def _run(args: argparse.Namespace, cfg: Config, runner: Runner, log: logging.Log
     log.info("ultron-runner %s as %s; job kinds %s", __version__, cfg.actor, jobs.kinds())
     if args.check:
         return _check(runner)
+    runner.sweep_scratch()  # under the runner lock: no other runner's job is mid-item
     if args.once:
         runner.tick()
         return 0

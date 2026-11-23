@@ -16,6 +16,8 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from .sharedfile import open_shared
+
 _DRIVE = re.compile(r"^[A-Za-z]:([\\/]|$)")
 
 
@@ -232,7 +234,8 @@ def read_index(path: str | os.PathLike[str]) -> list[dict[str, Any]]:
     """The records of a ``.jsonl`` (one per line) or ``.json`` (``{"items": [...]}`` or a list)
     index file, as stored. Raises ValueError on a file that isn't an index."""
     p = Path(path)
-    text = p.read_text(encoding="utf-8")
+    with open_shared(p, "r", encoding="utf-8") as fh:  # never blocks a writer's replace
+        text = fh.read()
     if p.suffix.lower() == ".jsonl":
         records = []
         for n, line in enumerate(text.splitlines(), 1):

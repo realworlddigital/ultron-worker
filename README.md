@@ -49,6 +49,22 @@ normalized on read when the path is under a known root. `params.merge` (a list o
 files) merges them into this job's output, one record per `root` + `relpath`; this pass wins,
 except that a failed or skipped record never replaces a tagged one.
 
+**Catalog (cards are disposable).** Every `vision_tag` record carries `size_bytes` and `mtime`
+(epoch seconds) from the file's stat at tag time. When a job starts and its output index
+already exists, every well-formed tagged record whose file still has the same size and mtime
+(2 s slack for FAT/SMB copies) counts as done from the start, with no model call; a changed file
+is tagged again, a new file is tagged, and a record written before stamps existed is trusted once
+and backfilled with the current stat. So a superseding card, or a re-run of a folder with new
+files, tags only what is new or changed (`params.ignore_index: true` re-tags everything). The
+SQLite checkpoint stays the within-run crash layer. After each completion the media root's
+`_index\catalog.jsonl` (one entry per indexed folder: `root`, `folder`, `index`, `files`,
+`tagged`, `skipped`, `failed`, `model`, `updated_at`; upserted on `root` + `folder`, where
+`folder` is the job's input folder, or the index's folder when the input isn't one folder) is
+updated and `_index\all-tags.jsonl` is rebuilt from every listed index with the merge rules
+above. A missing or unreadable index is left out and named in the completion note; catalog
+trouble never fails the job (its own index is already written). At startup the runner removes
+frame scratch dirs a hard kill left under `state_dir\jobs\<task>\frames`.
+
 ## How a job runs
 
 1. **Poll.** Every `poll_seconds` (60 by default) the runner lists its `in_progress` cards first

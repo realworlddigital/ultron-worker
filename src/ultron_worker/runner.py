@@ -23,7 +23,16 @@ from typing import Any
 from . import __version__, jobs
 from .backbone import Backbone, BackboneError, BackboneUnavailable, ScopeViolation
 from .config import Config
-from .jobs.base import ItemFailed, ItemRetry, JobContext, JobError, JobSpec, JobStopped, WorkItem
+from .jobs.base import (
+    ItemFailed,
+    ItemRetry,
+    JobContext,
+    JobError,
+    JobSpec,
+    JobStopped,
+    WorkItem,
+    sweep_scratch,
+)
 from .ollama import Ollama, OllamaModelMissing, OllamaUnavailable
 from .state import StatusBoard, Store, now_iso
 
@@ -79,6 +88,13 @@ class Runner:
         self._job_thread: threading.Thread | None = None
         self._verified = False
         jobs.load(cfg.job_modules)
+
+    def sweep_scratch(self) -> int:
+        """Startup only (no job running): drop frame scratch dirs orphaned by a hard kill."""
+        removed = sweep_scratch(self.cfg.state_dir / "jobs")
+        if removed:
+            log.info("startup: removed %s stale scratch dir(s) left by an earlier kill", removed)
+        return removed
 
     # ---- one poll -------------------------------------------------------------
     def tick(self) -> None:
@@ -215,6 +231,9 @@ class Runner:
         if not items:
             raise JobError("the job found nothing to process in its inputs")
         results = self.store.item_results(tid)
+        for key, seeded in kind.seed(spec, items, ctx).items():
+            if not (key in results and kind.settled(results[key])):
+                results[key] = seeded  # known done from outside the checkpoint: no model call
         done = sum(1 for it in items if it.key in results and kind.settled(results[it.key]))
         self.store.update_job(tid, total=len(items), done=done)
         budget_s = spec.budget_minutes * 60

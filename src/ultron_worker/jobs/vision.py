@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -17,10 +18,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ..catalog import file_stamp, has_stamp, stamp_matches, update_catalog
 from ..media import load_index
 from ..ollama import OllamaError, OllamaModelMissing, OllamaUnavailable
 from . import register
 from .base import (
+    SCRATCH_DIR,
     ItemFailed,
     ItemRetry,
     JobContext,
@@ -34,6 +37,7 @@ from .base import (
     write_records,
 )
 
+log = logging.getLogger("ultron")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm", ".wmv", ".mts"}
 PROMPT = (
@@ -180,11 +184,54 @@ class VisionTag(JobKind):
             for f in files
         ]
 
+    def seed(
+        self, spec: JobSpec, items: list[WorkItem], ctx: JobContext
+    ) -> dict[str, dict[str, Any]]:
+        """Files the job's existing output index already has tagged and that haven't changed
+        since (same size + mtime) are done. A record without a stamp (written before stamps
+        existed) is trusted once and backfilled with the file's current stat."""
+        ctx.cache["seeded"], ctx.cache["backfilled"] = 0, 0
+        if spec.params.get("ignore_index"):
+            return {}
+        out = ctx.allowed(spec.output, what="output target")
+        if not out.is_file():
+            return {}
+        roots = ctx.media_roots
+        try:
+            index = load_index(out, roots)
+        except (OSError, ValueError) as exc:
+            log.warning("output index %s can't be read, nothing seeded from it: %s", out, exc)
+            return {}
+        known = {roots.identity(r): r for r in index if "skipped" not in r and is_tag_record(r)}
+        seeded: dict[str, dict[str, Any]] = {}
+        for item in items:
+            path = item.payload["path"]
+            record = known.get(roots.identity({"path": path}))
+            if record is None:
+                continue
+            try:
+                stamp = file_stamp(path)
+            except OSError:
+                continue
+            if has_stamp(record):
+                if not stamp_matches(record, stamp):
+                    continue  # the file changed since it was tagged: tag it again
+            else:
+                record = {**record, **stamp}
+                ctx.cache["backfilled"] += 1
+            seeded[item.key] = {**record, "path": path}
+        ctx.cache["seeded"] = len(seeded)
+        return seeded
+
     def run_item(self, item: WorkItem, spec: JobSpec, ctx: JobContext) -> dict[str, Any]:
         path = Path(item.payload["path"])
+        try:
+            stamp = file_stamp(path)  # before reading: a file changed mid-tag re-tags next time
+        except OSError as exc:
+            raise ItemFailed(f"unreadable file: {exc}") from exc
         max_tags = int(spec.params.get("max_tags", 25))
         prompt = str(spec.params.get("prompt") or PROMPT).format(max_tags=max_tags)
-        scratch = ctx.work_dir / "frames" / hashlib.sha1(item.key.encode()).hexdigest()[:16]
+        scratch = ctx.work_dir / SCRATCH_DIR / hashlib.sha1(item.key.encode()).hexdigest()[:16]
         try:
             if item.payload["media"] == "video":
                 images = self._frames(path, scratch, int(spec.params.get("video_frames", 4)))
@@ -214,7 +261,7 @@ class VisionTag(JobKind):
         }
         if item.payload["media"] == "video":
             result["frames"] = len(images)
-        return result
+        return {**result, **stamp}
 
     def settled(self, result: dict[str, Any]) -> bool:
         return is_tag_record(result)  # also re-runs garbage checkpointed by an older runner
@@ -342,9 +389,24 @@ class VisionTag(JobKind):
         summary = f"{len(tagged)} tagged, {len(skipped)} skipped"
         if failed:
             summary += f", {len(failed)} failed"
+        if ctx.cache.get("seeded"):
+            summary += f" ({ctx.cache['seeded']} unchanged since the existing index, not re-tagged)"
         if earlier:
             summary += f" (merged with {len(earlier)} earlier index(es))"
-        return Output(paths=[str(out)], summary=summary)
+        catalog = update_catalog(
+            roots,
+            lambda ref: ctx.allowed(ref, what="catalog folder"),
+            index_path=out,
+            folder_path=_folder(spec, ctx),
+            counts={
+                "files": len(records),
+                "tagged": len(tagged),
+                "skipped": len(skipped),
+                "failed": len(failed),
+            },
+            model=spec.model,
+        )
+        return Output(paths=[str(out)], summary=f"{summary}; {catalog}")
 
 
 def _failed(result: dict[str, Any]) -> dict[str, Any]:
@@ -366,6 +428,15 @@ def _location(path: Path, ctx: JobContext) -> dict[str, str]:
     found = ctx.media_roots.relativize(path)
     loc = {"root": found[0], "relpath": found[1]} if found else {}
     return {**loc, "path": str(path)}
+
+
+def _folder(spec: JobSpec, ctx: JobContext) -> Path | None:
+    """The folder a TOC entry names: the job's input when it is one folder, else None (the
+    catalog then uses the index's own folder)."""
+    if len(spec.inputs) != 1:
+        return None
+    p = ctx.allowed(spec.inputs[0], what="input")
+    return p if p.is_dir() else None
 
 
 def _merge_refs(spec: JobSpec) -> list[str]:
