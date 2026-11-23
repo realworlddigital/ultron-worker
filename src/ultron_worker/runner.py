@@ -231,11 +231,9 @@ class Runner:
         if not items:
             raise JobError("the job found nothing to process in its inputs")
         results = self.store.item_results(tid)
-        seeded_ok = 0  # results known good from outside the checkpoint: the job isn't broken
         for key, seeded in kind.seed(spec, items, ctx).items():
             if not (key in results and kind.settled(results[key])):
                 results[key] = seeded  # known done from outside the checkpoint: no model call
-                seeded_ok += kind.settled(seeded)
         done = sum(1 for it in items if it.key in results and kind.settled(results[it.key]))
         self.store.update_job(tid, total=len(items), done=done)
         budget_s = spec.budget_minutes * 60
@@ -259,7 +257,7 @@ class Runner:
         clock = _ActiveClock(self.board)
         active = job["active_seconds"]
         last_progress = 0.0
-        consecutive_failures, successes = 0, seeded_ok
+        consecutive_failures, successes = 0, 0
         self._progress(tid, done, len(items), None, active)
         try:
             for item in items:

@@ -274,16 +274,16 @@ def test_the_cli_sweeps_before_running_but_check_does_not(tmp_path, monkeypatch)
     assert calls == []
 
 
-def test_seeded_items_keep_failing_new_files_from_looking_like_a_broken_job(
-    make, library, monkeypatch
-) -> None:
+def test_seeded_items_do_not_mask_a_broken_job(make, library, monkeypatch) -> None:
     runner, bb, _ = make()
     tag(runner, bb, "t1", library)
     for i in range(6):
         (library / f"v{i}.mp4").write_bytes(b"not a video")
     monkeypatch.setattr("ultron_worker.jobs.vision.shutil.which", lambda name: None)
-    tag(runner, bb, "t2", library)  # no ffmpeg: 6 videos skipped, 5 photos seeded
-    assert "5 tagged, 6 skipped" in note(bb, "t2")
+    bb.add("t2", inputs=[str(library)], output=str(library / "tags.jsonl"))
+    runner.tick()  # 5 photos seeded, but every file actually attempted fails: not "done"
+    assert bb.tasks["t2"]["status"] != "done"
+    assert "first 5 items all failed" in note(bb, "t2")
 
 
 def test_toc_entries_cannot_reach_outside_the_allowed_roots(tmp_path) -> None:
