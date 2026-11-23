@@ -319,3 +319,19 @@ def test_an_event_that_keeps_failing_is_dropped_and_stops_blocking(make, cfg) ->
     assert runner.outbox.pending("gone") == 0 and runner.outbox.dropped == 1
     assert runner.outbox.flush(send) == 1 and len(runner.outbox) == 0
     assert sends["n"] == EVENT_ATTEMPTS
+
+
+def test_a_failing_event_gets_one_send_per_good_poll(make, library, tmp_path, cfg) -> None:
+    bb = FlakyEvents(cfg)
+    runner, _, _ = make(bb=bb)
+    bb.add("t1", inputs=[str(library)], output=str(tmp_path / "tags.jsonl"))
+    runner.tick()
+    assert bb.tasks["t1"]["status"] == "done"
+    runner.store.update_job("t1", status="finished", report_step=0)
+    bb.tasks["t1"]["status"] = "in_progress"
+    runner.outbox.put(_Event("progress", "t1", "late"))
+    bb.fail = 99
+    before = bb.sent.count(("POST", "/events"))
+    runner.tick()  # poll flush fails; the report (finished job) must not retry it this poll
+    assert bb.sent.count(("POST", "/events")) - before == 1
+    assert runner.outbox.pending("t1") == 1 and bb.tasks["t1"]["status"] == "in_progress"

@@ -231,7 +231,8 @@ class Runner:
             self._job_thread.start()
         else:
             self._execute_safely(card, fresh)
-            self.flush_outbox()
+            if not self._backbone_down:
+                self.flush_outbox()
 
     def flush_outbox(self) -> None:
         """Deliver the job's queued events (never called from the job thread mid-job)."""
@@ -559,7 +560,8 @@ class Runner:
                 ),
                 lambda: self.bb.transition(tid, "needs_david", note=job["error"][:500]),
             ]
-        self.flush_outbox()  # the job's own events go out before its completion
+        if not self._backbone_down:  # else this poll's flush just failed: one try per poll
+            self.flush_outbox()  # the job's own events go out before its completion
         if queued := self.outbox.pending(tid):
             log.warning("report for %s deferred: %s of its event(s) still queued", tid, queued)
             return
