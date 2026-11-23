@@ -311,6 +311,32 @@ def test_toc_entries_cannot_reach_outside_the_allowed_roots(tmp_path) -> None:
     assert [r["relpath"] for r in rows(base / CATALOG_DIR / ALL_TAGS_NAME)] == ["A/x.png"]
 
 
+def test_a_symlink_loop_index_is_skipped_not_fatal(tmp_path) -> None:
+    from ultron_worker.jobs.base import JobContext
+
+    base = tmp_path / "Media"
+    (base / "A").mkdir(parents=True)
+    (base / "L").mkdir()
+    rec = {"root": "Media", "relpath": "A/x.png", "caption": "c", "tags": ["x"]}
+    (base / "A" / "tags.jsonl").write_text(json.dumps(rec) + "\n")
+    os.symlink(base / "L" / "b", base / "L" / "a")
+    os.symlink(base / "L" / "a", base / "L" / "b")
+    (base / CATALOG_DIR).mkdir()
+    loop = {"root": "Media", "folder": "L", "index": "L/a/tags.jsonl"}
+    (base / CATALOG_DIR / TOC_NAME).write_text(json.dumps(loop) + "\n")
+    ctx = JobContext(task_id="t", ollama=None, allowed_roots=(base,), work_dir=tmp_path / "w")
+    msg = update_catalog(
+        ctx.media_roots,
+        lambda ref: ctx.allowed(ref, what="catalog folder"),
+        index_path=base / "A" / "tags.jsonl",
+        folder_path=base / "A",
+        counts={"files": 1, "tagged": 1, "skipped": 0, "failed": 0},
+        model="m",
+    )
+    assert "skipped missing/unreadable index(es): Media/L/a/tags.jsonl" in msg
+    assert [r["relpath"] for r in rows(base / CATALOG_DIR / ALL_TAGS_NAME)] == ["A/x.png"]
+
+
 def test_an_output_named_as_a_catalog_file_is_not_overwritten(make, library, tmp_path) -> None:
     runner, bb, _ = make()
     out = tmp_path / CATALOG_DIR / ALL_TAGS_NAME

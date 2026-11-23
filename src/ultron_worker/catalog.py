@@ -137,7 +137,7 @@ def update_catalog(
             if where is None:
                 raise ValueError("no such media root on this machine")
             passes.append(load_index(allowed(where), roots))  # a hand-edited TOC can't reach out
-        except (OSError, ValueError, JobError):
+        except (OSError, ValueError, RuntimeError, JobError):  # RuntimeError: symlink loop (<3.13)
             unread.append(ref)
     try:
         _write(toc_path, toc)
