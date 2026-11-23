@@ -9,6 +9,7 @@ its own domain, only on ``task.local_job`` cards routed to ``local-ultron``, and
 from __future__ import annotations
 
 import contextlib
+import http.client
 import json
 import re
 import urllib.error
@@ -144,7 +145,13 @@ class Backbone:
             if exc.code >= 500 or exc.code == 429:
                 raise BackboneUnavailable(f"backbone {exc.code}: {detail}") from exc
             raise BackboneError(exc.code, detail) from exc
-        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            OSError,
+            http.client.HTTPException,  # e.g. IncompleteRead: the tunnel cut the response short
+        ) as exc:
             raise BackboneUnavailable(str(getattr(exc, "reason", exc))) from exc
         return json.loads(raw) if raw else {}
 
