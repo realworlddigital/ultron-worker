@@ -110,6 +110,10 @@ def update_catalog(
         "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
     toc_path = cat_dir / TOC_NAME
+    if os.path.normcase(str(index_path.parent)) == os.path.normcase(str(cat_dir)) and (
+        index_path.name.casefold() in (TOC_NAME, ALL_TAGS_NAME)
+    ):
+        return "catalog not updated: the output is a catalog file itself"
     try:
         toc = load_index(toc_path, roots) if toc_path.is_file() else []
     except (OSError, ValueError) as exc:
@@ -132,8 +136,8 @@ def update_catalog(
         try:
             if where is None:
                 raise ValueError("no such media root on this machine")
-            passes.append(load_index(where, roots))
-        except (OSError, ValueError):
+            passes.append(load_index(allowed(where), roots))  # a hand-edited TOC can't reach out
+        except (OSError, ValueError, JobError):
             unread.append(ref)
     try:
         _write(toc_path, toc)

@@ -284,3 +284,39 @@ def test_seeded_items_keep_failing_new_files_from_looking_like_a_broken_job(
     monkeypatch.setattr("ultron_worker.jobs.vision.shutil.which", lambda name: None)
     tag(runner, bb, "t2", library)  # no ffmpeg: 6 videos skipped, 5 photos seeded
     assert "5 tagged, 6 skipped" in note(bb, "t2")
+
+
+def test_toc_entries_cannot_reach_outside_the_allowed_roots(tmp_path) -> None:
+    from ultron_worker.jobs.base import JobContext
+
+    base = tmp_path / "Media"
+    (base / "A").mkdir(parents=True)
+    (tmp_path / "secret").mkdir()
+    rec = {"root": "Media", "relpath": "A/x.png", "caption": "c", "tags": ["x"]}
+    (base / "A" / "tags.jsonl").write_text(json.dumps(rec) + "\n")
+    (tmp_path / "secret" / "tags.jsonl").write_text(json.dumps({**rec, "relpath": "s"}) + "\n")
+    (base / CATALOG_DIR).mkdir()
+    evil = {"root": "Media", "folder": "evil", "index": "../secret/tags.jsonl"}
+    (base / CATALOG_DIR / TOC_NAME).write_text(json.dumps(evil) + "\n")
+    ctx = JobContext(task_id="t", ollama=None, allowed_roots=(base,), work_dir=tmp_path / "w")
+    msg = update_catalog(
+        ctx.media_roots,
+        lambda ref: ctx.allowed(ref, what="catalog folder"),
+        index_path=base / "A" / "tags.jsonl",
+        folder_path=base / "A",
+        counts={"files": 1, "tagged": 1, "skipped": 0, "failed": 0},
+        model="m",
+    )
+    assert "skipped missing/unreadable index(es): Media/../secret/tags.jsonl" in msg
+    assert [r["relpath"] for r in rows(base / CATALOG_DIR / ALL_TAGS_NAME)] == ["A/x.png"]
+
+
+def test_an_output_named_as_a_catalog_file_is_not_overwritten(make, library, tmp_path) -> None:
+    runner, bb, _ = make()
+    out = tmp_path / CATALOG_DIR / ALL_TAGS_NAME
+    bb.add("t1", inputs=[str(library)], output=str(out))
+    runner.tick()
+    assert bb.tasks["t1"]["status"] == "done", bb.notes
+    assert "the output is a catalog file itself" in note(bb, "t1")
+    assert len(rows(out)) == 5 and all(r["tags"] for r in rows(out))
+    assert not (tmp_path / CATALOG_DIR / TOC_NAME).exists()
