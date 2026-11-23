@@ -61,7 +61,7 @@ class JobSpec:
         inputs = job.get("inputs")
         if isinstance(inputs, str):
             inputs = [inputs]
-        missing = [k for k in ("kind", "model", "output") if not job.get(k)]
+        missing = [k for k in ("kind", "output") if not job.get(k)]
         if not inputs:
             missing.append("inputs")
         if missing:
@@ -80,7 +80,7 @@ class JobSpec:
         return cls(
             kind=str(job["kind"]),
             inputs=tuple(str(i) for i in inputs),
-            model=str(job["model"]),
+            model=str(job.get("model") or ""),
             output=str(job["output"]),
             budget_minutes=budget,
             params=params,
@@ -97,7 +97,7 @@ class WorkItem:
 @dataclass(frozen=True)
 class Output:
     paths: list[str]
-    summary: str
+    summary: str  # first line: the headline (events, GUI); later lines: detail for the note
 
 
 @dataclass

@@ -216,6 +216,8 @@ class Runner:
         kind = jobs.get(spec.kind)
         if kind is None:
             raise JobError(f"unknown job kind {spec.kind!r}; this runner has {jobs.kinds()}")
+        if kind.needs_model and not spec.model:
+            raise JobError("card data.job is missing model")
         work_dir = self.cfg.state_dir / "jobs" / tid
         work_dir.mkdir(parents=True, exist_ok=True)
         ctx = JobContext(
@@ -370,21 +372,23 @@ class Runner:
         if job["status"] == "finished":
             where = ", ".join(job["outputs"]) or "(no output)"
             minutes = job["active_seconds"] / 60
+            headline, _, detail = (job["summary"] or "").partition("\n")
+            used = job["kind"] if job["model"] in ("", "?") else f"{job['kind']}, {job['model']}"
             final = "done"
             calls = [
                 lambda: self.bb.event(
                     "completed",
                     tid,
-                    f"Ultron finished {job['title']}: {job['summary']}",
+                    f"Ultron finished {job['title']}: {headline}",
                     outputs=job["outputs"],
-                    summary=job["summary"],
+                    summary=headline,
                     items=job["total"],
                     duration_s=round(job["active_seconds"]),
                 ),
                 lambda: self.bb.note(
                     tid,
-                    f"Ultron finished: {job['summary']} in {minutes:.1f} min "
-                    f"({job['kind']}, {job['model']}). Output: {where}",
+                    f"Ultron finished: {headline} in {minutes:.1f} min ({used}). "
+                    f"Output: {where}" + (f"\n{detail}" if detail else ""),
                 ),
                 lambda: self.bb.transition(tid, "done", note=f"Output: {where}"),
             ]
