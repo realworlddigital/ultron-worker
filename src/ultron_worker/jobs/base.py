@@ -8,7 +8,8 @@ import os
 import shutil
 import tempfile
 import threading
-from collections.abc import Iterable
+import time
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -100,6 +101,43 @@ class Output:
     summary: str  # first line: the headline (events, GUI); later lines: detail for the note
 
 
+class ItemTiming:
+    """Where one work item's time went: wall seconds (and call counts) per named phase."""
+
+    def __init__(self) -> None:
+        self.seconds: dict[str, float] = {}
+        self.calls: dict[str, int] = {}
+
+    @contextlib.contextmanager
+    def phase(self, name: str) -> Iterator[None]:
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            self.seconds[name] = self.seconds.get(name, 0.0) + time.perf_counter() - started
+            self.calls[name] = self.calls.get(name, 0) + 1
+
+
+class TimedOllama:
+    """Ollama as a job sees it: every model call (a repair re-ask too) lands in the current
+    item's ``model`` phase, for every job kind without touching them."""
+
+    def __init__(self, ollama: Any, ctx: JobContext) -> None:
+        self._ollama = ollama
+        self._ctx = ctx
+
+    def generate(self, *args: Any, **kwargs: Any) -> str:
+        with self._ctx.phase("model"):
+            return self._ollama.generate(*args, **kwargs)
+
+    def embed(self, *args: Any, **kwargs: Any) -> list[list[float]]:
+        with self._ctx.phase("model"):
+            return self._ollama.embed(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._ollama, name)
+
+
 @dataclass
 class JobContext:
     task_id: str
@@ -109,6 +147,11 @@ class JobContext:
     stop: threading.Event = field(default_factory=threading.Event)
     cache: dict[str, Any] = field(default_factory=dict)
     media_roots: MediaRoots | None = None
+    timing: ItemTiming = field(default_factory=ItemTiming)  # the runner resets it per item
+
+    def phase(self, name: str) -> contextlib.AbstractContextManager[None]:
+        """Time a block of the current item under ``name`` (see the runner's per-item line)."""
+        return self.timing.phase(name)
 
     def __post_init__(self) -> None:
         if self.media_roots is None:

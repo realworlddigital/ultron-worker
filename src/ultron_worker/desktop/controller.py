@@ -21,10 +21,12 @@ from . import health, update, winenv
 from .autostart import Autostart
 from .layout import Install, RunnerSettings, now_iso, repo_head, venv_python
 from .supervisor import RunnerProcess
+from .wakelock import WakeLock
 
 log = logging.getLogger("ultron.desktop")
 HEALTH_EVERY = 600.0  # seconds between --check runs (plus on demand and after each start)
 IDLE_POLL = 15.0  # while an update waits for the current job to finish
+WAKE_EVERY = 10.0  # seconds between "is a job running?" checks for the wake lock
 LOG_TAIL_BYTES = 48_000
 LOG_TAIL_LINES = 250
 
@@ -61,6 +63,7 @@ class App:
         launcher: Path | None = None,
         updated_to: str | None = None,
         relaunch: Callable[[list[str]], None] | None = None,
+        wake_lock: WakeLock | None = None,
     ) -> None:
         self.install = install
         self.settings = RunnerSettings.read(install.config)
@@ -86,6 +89,8 @@ class App:
         self.external_pid: int | None = None
         self._stop = threading.Event()
         self._next_health = 0.0
+        self.wake = wake_lock or WakeLock()
+        self._next_wake = 0.0
         self.backfill_sha()
         if updated_to:
             sha = install.sha or updated_to
@@ -124,10 +129,26 @@ class App:
         return self.runner.stop()
 
     def _loop(self) -> None:
-        while not self._stop.wait(1.0):
-            self.runner.poll()
-            if time.monotonic() >= self._next_health and not self.checking:
-                self.check_health_async()
+        try:
+            while not self._stop.wait(1.0):
+                self.runner.poll()
+                if time.monotonic() >= self._next_health and not self.checking:
+                    self.check_health_async()
+                if time.monotonic() >= self._next_wake:
+                    self._next_wake = time.monotonic() + WAKE_EVERY
+                    self.keep_awake()
+        finally:
+            self.wake.release()
+
+    def working(self) -> bool:
+        """A job is active on this machine's runner (ours or one started outside the app)."""
+        st = self.runner_state()
+        return bool(st and st.get("current"))
+
+    def keep_awake(self) -> bool:
+        """Hold the wake lock while a job runs, release it when idle. Monitor thread only:
+        the Windows execution state belongs to the thread that set it."""
+        return self.wake.hold(self.working())
 
     def updating(self) -> bool:
         return bool(self.job) and self.job["phase"] in (
@@ -367,6 +388,7 @@ class App:
                 "external_pid": self.external_pid,
                 "activity": (rstate or {}).get("runner", {}).get("activity"),
                 "current": (rstate or {}).get("current"),
+                "wake_lock": self.wake.held,
             },
             "health": h.to_json() if h else None,
             "checking": self.checking,

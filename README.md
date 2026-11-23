@@ -74,10 +74,17 @@ frame scratch dirs a hard kill left under `state_dir\jobs\<task>\frames`.
 2. **Checkpoint.** Each finished item is committed to SQLite (`state_dir\state.db`, WAL,
    synchronous=FULL) in the same transaction as the job's progress. If the runner is killed,
    rebooted or the laptop sleeps, it picks up after the last committed item (`ultron.resumed`) and
-   never runs a finished item through the model again.
+   never runs a finished item through the model again. Each finished item logs one INFO line
+   with where its time went, e.g. `item GUILD-RAW-Media/Guild Hall/C8562.MP4 done in 83.2s
+   (stat 0.0s, frames 12.0s, model 70.1s x2, other 0.1s, post 0.3s)` (`x2`: a repair re-ask;
+   `incl. ~Ns asleep` when the laptop slept mid-item); the phases are also kept in the item's
+   checkpoint row (`items.timing`). Enumeration is logged once per job.
 3. **Progress.** `ultron.progress` events (done/total, current file) go out at most every
    `progress_seconds`. A heartbeat goes to `system/status/ultron-runner` (`idle` / `working` /
-   `paused-by-sleep`).
+   `paused-by-sleep`). The job thread never waits on the backbone between items: its events go to
+   a small in-memory outbox (newest progress per card kept while the backbone is down) that a
+   sender thread and the poll loop flush; every backbone write gives up after 10 s. A dead tunnel
+   costs zero item time.
 4. **Output.** The output file is written once, atomically (temp file then `os.replace`), so a
    crash never leaves a half-written or duplicated file. The runner then posts `ultron.completed`,
    adds a result note and moves the card to `done`.
@@ -165,6 +172,10 @@ starts the runner as its child and owns it:
   one **Check unavailable** light with the reason: that is one problem, not three failures.
 - **Status and log.** The existing status GUI (unchanged) in the middle, and a live tail of
   `ultron.log` below it.
+- **Wake lock.** While the runner reports a current job, the app holds a Windows wake lock
+  (`SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`; the display may still sleep)
+  and releases it when idle, so an overnight ingest isn't lost to idle sleep. Closing the lid or
+  the power button still sleep; the job budget doesn't count that time.
 - **Tray.** Closing the window hides it to the tray and the runner keeps working. The tray menu has
   Open, Restart runner and Quit (stops the runner cleanly). Launching Ultron again just brings the
   window back.

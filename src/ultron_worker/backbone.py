@@ -19,7 +19,10 @@ from typing import Any
 from .config import EVENT_PREFIX, EXECUTOR, FORBIDDEN_DOMAINS, TASK_TYPE, Config
 
 USER_AGENT = "ultron-worker/0.1"
-TIMEOUT = 30.0
+TIMEOUT = 30.0  # reads (the poll loop)
+# Writes (transitions, notes, events, heartbeat) give up fast: a dead tunnel costs at most this
+# per call, and the caller decides whether to queue, defer or drop.
+WRITE_TIMEOUT = 10.0
 TASK_ID = r"[A-Za-z0-9_\-]+"
 # (method, path pattern): the runner's whole API surface.
 ALLOWED = (
@@ -103,10 +106,18 @@ class Backbone:
         body: dict[str, Any] | None = None,
     ) -> Any:
         self._check(method, path, params, body)
-        return self._send(method, path, params, body)
+        return self._send(
+            method, path, params, body, timeout=TIMEOUT if method == "GET" else WRITE_TIMEOUT
+        )
 
     def _send(
-        self, method: str, path: str, params: dict[str, Any] | None, body: dict[str, Any] | None
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None,
+        body: dict[str, Any] | None,
+        *,
+        timeout: float = TIMEOUT,
     ) -> Any:
         url = self.base + path
         if params:
@@ -124,7 +135,7 @@ class Backbone:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:  # noqa: S310 (https only)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (https only)
                 raw = resp.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:500]

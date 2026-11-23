@@ -4,7 +4,12 @@ Outbound only. Each tick lists the runner's own cards (in_progress first, to res
 dispatched, oldest first), keeps the GUI queue current, and starts at most one job. A job
 runs item by item, committing each item's result before the next; progress events go out at
 ``progress_seconds``. The job itself never needs the network: if the backbone is down mid-job
-the job carries on and its completion is reported on the next tick that reaches it.
+the job carries on and its completion is reported on the next tick that reaches it. The job
+thread never waits on the backbone between items: its events go to a small in-memory
+:class:`Outbox` that the poll loop (and a sender thread) flush with short timeouts.
+
+Every finished item logs one INFO line with where its time went (stat, frames, model calls
+incl. a repair re-ask, checkpoint/post), and the phases ride along in its checkpoint row.
 
 Failures are bounded: retryable ones (Ollama down, unexpected errors, items whose model output
 stayed unusable - only those items are re-run) get ``max_attempts`` tries, then the card goes to
@@ -18,6 +23,9 @@ import json
 import logging
 import threading
 import time
+from collections import deque
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from . import __version__, jobs
@@ -26,10 +34,12 @@ from .config import Config
 from .jobs.base import (
     ItemFailed,
     ItemRetry,
+    ItemTiming,
     JobContext,
     JobError,
     JobSpec,
     JobStopped,
+    TimedOllama,
     WorkItem,
     sweep_scratch,
 )
@@ -42,6 +52,67 @@ log = logging.getLogger("ultron")
 BROKEN_AFTER = 5
 WATCH_STEP = 5.0  # sleep-watch granularity, seconds
 BUDGET_GRACE = WATCH_STEP + 1  # lets the watch report a just-ended suspend first
+OUTBOX_LIMIT = 200  # queued job events kept while the backbone is unreachable (oldest dropped)
+
+
+@dataclass
+class _Event:
+    action: str
+    tid: str
+    summary: str
+    severity: str = "routine"
+    data: dict[str, Any] = field(default_factory=dict)
+
+
+class Outbox:
+    """Job-thread events waiting for the backbone: bounded, and while the backbone is known
+    down only the newest ``progress`` per card is kept (an older one says nothing the newer
+    doesn't). The job thread only ever ``put``s; ``flush`` runs on the poll loop or the sender
+    thread."""
+
+    def __init__(self, limit: int = OUTBOX_LIMIT) -> None:
+        self.limit = limit
+        self.dropped = 0
+        self._items: deque[_Event] = deque()
+        self._lock = threading.Lock()
+        self._flushing = threading.Lock()  # one flush at a time keeps events in order
+        self.ready = threading.Event()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._items)
+
+    def put(self, event: _Event, *, coalesce: bool = False) -> None:
+        with self._lock:
+            if coalesce and event.action == "progress":
+                stale = [e for e in self._items if e.action == "progress" and e.tid == event.tid]
+                for e in stale:
+                    self._items.remove(e)
+            self._items.append(event)
+            while len(self._items) > self.limit:
+                self._items.popleft()
+                self.dropped += 1
+        self.ready.set()
+
+    def flush(self, send: Any) -> int:
+        """Send queued events oldest first; stop (keeping the rest) at the first
+        :class:`BackboneUnavailable`, which propagates. A refused event is logged and dropped.
+        Returns how many were delivered."""
+        sent = 0
+        with self._flushing:
+            while True:
+                with self._lock:
+                    if not self._items:
+                        return sent
+                    event = self._items[0]
+                try:
+                    send(event)
+                    sent += 1
+                except BackboneError as exc:
+                    log.warning("event ultron.%s for %s refused: %s", event.action, event.tid, exc)
+                with self._lock:
+                    if self._items and self._items[0] is event:
+                        self._items.popleft()
 
 
 class _Stopped(Exception):
@@ -87,6 +158,8 @@ class Runner:
         self.poll_now = threading.Event()
         self._job_thread: threading.Thread | None = None
         self._verified = False
+        self.outbox = Outbox()
+        self._backbone_down = False  # the last flush hit a dead backbone: wait for a good poll
         jobs.load(cfg.job_modules)
 
     def sweep_scratch(self) -> int:
@@ -113,6 +186,8 @@ class Runner:
             log.error("poll: %s", exc)
             return
         self.board.contact(True)
+        self._backbone_down = False
+        self.flush_outbox()
         busy = self._job_thread is not None and self._job_thread.is_alive()
         current = (self.board.current() or {}).get("task_id")
         runnable = [t for t in in_progress if self._resumable(t)] + dispatched
@@ -133,6 +208,27 @@ class Runner:
             self._job_thread.start()
         else:
             self._execute_safely(card, fresh)
+            self.flush_outbox()
+
+    def flush_outbox(self) -> None:
+        """Deliver the job's queued events (never called from the job thread mid-job)."""
+        try:
+            self.outbox.flush(
+                lambda e: self.bb.event(e.action, e.tid, e.summary, severity=e.severity, **e.data)
+            )
+        except BackboneUnavailable as exc:
+            self._backbone_down = True
+            self.board.contact(False, f"backbone unreachable: {exc}")
+            log.warning("%s job event(s) queued (backbone unreachable): %s", len(self.outbox), exc)
+
+    def _send_outbox(self) -> None:
+        """Sender thread: flush soon after the job queues an event, unless the last flush
+        found the backbone down (then the next good poll flushes)."""
+        while not self.stop.is_set():
+            self.outbox.ready.wait(self.cfg.poll_seconds)
+            self.outbox.ready.clear()
+            if not self.stop.is_set() and not self._backbone_down and len(self.outbox):
+                self.flush_outbox()
 
     def _verify_identity(self) -> None:
         me = self.bb.me()
@@ -220,6 +316,7 @@ class Runner:
             raise JobError("card data.job is missing model")
         work_dir = self.cfg.state_dir / "jobs" / tid
         work_dir.mkdir(parents=True, exist_ok=True)
+        planning = time.perf_counter()
         ctx = JobContext(
             task_id=tid,
             ollama=self.ollama,
@@ -228,6 +325,7 @@ class Runner:
             work_dir=work_dir,
             stop=self.stop,
         )
+        ctx.ollama = TimedOllama(self.ollama, ctx)
         kind.validate(spec, ctx)
         items = kind.plan(spec, ctx)
         if not items:
@@ -238,6 +336,13 @@ class Runner:
                 results[key] = seeded  # known done from outside the checkpoint: no model call
         done = sum(1 for it in items if it.key in results and kind.settled(results[it.key]))
         self.store.update_job(tid, total=len(items), done=done)
+        log.info(
+            "job %s: %s item(s) enumerated in %.1fs, %s already done",
+            tid,
+            len(items),
+            time.perf_counter() - planning,
+            done,
+        )
         budget_s = spec.budget_minutes * 60
         self.board.set_current(
             {
@@ -278,6 +383,8 @@ class Runner:
                     )
                 self.board.update_current(current_item=item.label)
                 self.store.update_job(tid, current_item=item.label)
+                ctx.timing = ItemTiming()
+                item_started, slept_before = time.perf_counter(), self.board.sleep_seconds_total
                 try:
                     result = kind.run_item(item, spec, ctx)
                     consecutive_failures, successes = 0, successes + 1
@@ -293,12 +400,26 @@ class Runner:
                 if kind.settled(result):
                     done += 1
                 results[item.key] = result
-                self.store.checkpoint(tid, item.key, result, done=done, current_item=item.label)
+                timing = _phases(ctx.timing, time.perf_counter() - item_started)
+                post_started = time.perf_counter()
+                self.store.checkpoint(
+                    tid, item.key, result, done=done, current_item=item.label, timing=timing
+                )
                 active = self.store.add_active(tid, clock.lap())
                 self.board.update_current(done=done, elapsed_s=round(active))
                 if time.monotonic() - last_progress >= self.cfg.progress_seconds:
                     last_progress = time.monotonic()
                     self._progress(tid, done, len(items), item.label, active)
+                log.info(
+                    _item_line(
+                        _item_name(item, ctx),
+                        result,
+                        timing,
+                        ctx.timing.calls,
+                        post=time.perf_counter() - post_started,
+                        slept=self.board.sleep_seconds_total - slept_before,
+                    )
+                )
             self.board.update_current(current_item="writing output")
             ordered: list[tuple[WorkItem, dict[str, Any]]] = [(it, results[it.key]) for it in items]
             output = kind.finalize(spec, ordered, ctx)
@@ -415,6 +536,7 @@ class Runner:
                 ),
                 lambda: self.bb.transition(tid, "needs_david", note=job["error"][:500]),
             ]
+        self.flush_outbox()  # the job's own events go out before its completion
         try:
             for step, call in enumerate(calls):
                 if step < int(job.get("report_step") or 0):
@@ -428,13 +550,11 @@ class Runner:
         except BackboneError as exc:
             log.error("report for %s refused: %s", tid, exc)
 
-    def _safe_event(self, action: str, tid: str, summary: str, **data: Any) -> None:
-        try:
-            self.bb.event(action, tid, summary, **data)
-        except BackboneUnavailable as exc:
-            self.board.contact(False, f"backbone unreachable: {exc}")
-        except BackboneError as exc:
-            log.warning("event ultron.%s for %s refused: %s", action, tid, exc)
+    def _safe_event(
+        self, action: str, tid: str, summary: str, *, severity: str = "routine", **data: Any
+    ) -> None:
+        """Queue a job event: never a network call on the job thread (see :class:`Outbox`)."""
+        self.outbox.put(_Event(action, tid, summary, severity, data), coalesce=self._backbone_down)
 
     # ---- heartbeat + sleep watch ----------------------------------------------
     def heartbeat(self) -> None:
@@ -475,6 +595,8 @@ class Runner:
     def run_forever(self) -> None:
         watcher = threading.Thread(target=self._watch, name="heartbeat", daemon=True)
         watcher.start()
+        sender = threading.Thread(target=self._send_outbox, name="outbox", daemon=True)
+        sender.start()
         while not self.stop.is_set():
             self.poll_now.clear()
             self.tick()
@@ -482,6 +604,8 @@ class Runner:
         if self._job_thread is not None:
             self._job_thread.join(timeout=60)
         watcher.join(timeout=WATCH_STEP + 1)
+        self.outbox.ready.set()
+        sender.join(timeout=WATCH_STEP + 1)
 
 
 class _ActiveClock:
@@ -498,6 +622,43 @@ class _ActiveClock:
         delta = (wall - self._wall) - (slept - self._slept)
         self._wall, self._slept = wall, slept
         return delta
+
+
+def _phases(timing: ItemTiming, total: float) -> dict[str, float]:
+    """The item's phases plus ``other`` (time no phase claimed) and ``total``, rounded."""
+    out = {name: round(sec, 3) for name, sec in timing.seconds.items()}
+    out["other"] = round(max(0.0, total - sum(timing.seconds.values())), 3)
+    out["total"] = round(total, 3)
+    return out
+
+
+def _item_name(item: WorkItem, ctx: JobContext) -> str:
+    """``ROOT/rel/path`` for a file under a media root, else the item's label."""
+    path = item.payload.get("path")
+    found = ctx.media_roots.relativize(Path(path)) if path and ctx.media_roots else None
+    return f"{found[0]}/{found[1]}" if found else item.label
+
+
+def _item_line(
+    name: str,
+    result: dict[str, Any],
+    timing: dict[str, float],
+    calls: dict[str, int],
+    *,
+    post: float,
+    slept: float,
+) -> str:
+    outcome = "skipped" if "skipped" in result else "failed" if "failed" in result else "done"
+    parts = []
+    for phase, sec in timing.items():
+        if phase == "total":
+            continue
+        n = calls.get(phase, 1)
+        parts.append(f"{phase} {sec:.1f}s" + (f" x{n}" if n > 1 else ""))
+    parts.append(f"post {post:.1f}s")
+    if slept > 0:
+        parts.append(f"incl. ~{slept:.0f}s asleep")
+    return f"item {name} {outcome} in {timing['total'] + post:.1f}s ({', '.join(parts)})"
 
 
 def _queue_row(task: dict[str, Any], job: dict[str, Any] | None) -> dict[str, Any]:
