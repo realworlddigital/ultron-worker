@@ -34,6 +34,7 @@ from .base import (
 from .vision import IMAGE_EXTS, VIDEO_EXTS
 
 CATALOG = "_index/catalog.jsonl"
+ALL_TAGS = "all-tags.jsonl"
 # NAS/OS housekeeping folders (Synology thumbnails and recycle bins, Windows and macOS system
 # folders) plus the catalog's own _index: never footage.
 SYSTEM_DIRS = frozenset(
@@ -103,16 +104,23 @@ class FolderInventory(JobKind):
             ]
         else:
             records = [f for _, r in results for f in r.get("files", [])]
-        write_records(out, {}, records)
         roots = ctx.media_roots
         indexed: set[tuple[str, str]] = set()
         untagged: set[tuple[str, str]] = set()  # indexed, but only as failed/skipped
         catalog_notes: list[str] = []
+        catalog_files: set[str] = set()
         for root in sorted({r["root"] for r in records}):
-            seen, attempted, notes = _catalog(root, ctx)
+            seen, attempted, notes, read = _catalog(root, ctx)
             indexed |= seen
             untagged |= attempted
             catalog_notes += notes
+            catalog_files |= {_same(p) for p in read}
+        if _same(out) in catalog_files:
+            raise JobError(
+                f"output target {str(out)!r} is a catalog file (the TOC, all-tags.jsonl or a "
+                "folder index it lists); name a separate .jsonl file"
+            )
+        write_records(out, {}, records)
         depth = _group_depth(spec)
         folders: dict[tuple[str, str], dict[str, int]] = {}
         for rec in records:
@@ -303,16 +311,22 @@ def _walk(spec: JobSpec, ctx: JobContext) -> dict[str, Any]:
     return {"folders": folders, "unreadable": unreadable}
 
 
+def _same(path: Path) -> str:
+    return os.path.normcase(str(path.resolve(strict=False)))
+
+
 def _catalog(
     root: str, ctx: JobContext
-) -> tuple[set[tuple[str, str]], set[tuple[str, str]], list[str]]:
-    """(identities with a tag record, those whose record is only failed/skipped, notes) from
-    ``<root>/_index/catalog.jsonl`` and the folder indexes it lists."""
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]], list[str], list[Path]]:
+    """(identities with a tag record, those whose record is only failed/skipped, notes, the
+    catalog's files) from ``<root>/_index/catalog.jsonl`` and the folder indexes it lists."""
     roots: MediaRoots = ctx.media_roots
     where = roots.resolve(root, CATALOG)
     path = ctx.allowed(where, what="catalog") if where else None
+    files = [path, path.with_name(ALL_TAGS)] if path else []
     if path is None or not path.is_file():
-        return set(), set(), [f"No catalog at {where} yet: every {root} file counts as unindexed"]
+        note = f"No catalog at {where} yet: every {root} file counts as unindexed"
+        return set(), set(), [note], files
     try:
         toc = read_index(path)
     except (OSError, ValueError) as exc:
@@ -329,6 +343,7 @@ def _catalog(
         target = ref if is_absolute(ref) else roots.resolve(root, ref)
         try:
             index = ctx.allowed(target, what="folder index")
+            files.append(index)
             passes.append(load_index(index, roots))
         except (OSError, ValueError, JobError) as exc:
             missing.append(f"{ref} ({exc.__class__.__name__}: {exc})")
@@ -342,7 +357,7 @@ def _catalog(
             + "; ".join(missing[:3])
             + (" ..." if len(missing) > 3 else "")
         )
-    return seen, attempted, notes
+    return seen, attempted, notes, files
 
 
 register(FolderInventory())
