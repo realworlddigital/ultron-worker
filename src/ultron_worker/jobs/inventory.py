@@ -93,7 +93,15 @@ class FolderInventory(JobKind):
         self, spec: JobSpec, results: list[tuple[WorkItem, dict[str, Any]]], ctx: JobContext
     ) -> Output:
         out = ctx.allowed(spec.output, what="output target")
-        records = [f for _, r in results for f in r.get("files", [])]
+        walk = ctx.cache.get(WALK_CACHE)
+        if walk is not None:  # this attempt's walk: a re-dispatch never reports stale folders
+            records = [
+                f
+                for item, _ in results
+                for f in walk["folders"].get((item.payload["root"], item.payload["folder"]), [])
+            ]
+        else:
+            records = [f for _, r in results for f in r.get("files", [])]
         write_records(out, {}, records)
         roots = ctx.media_roots
         indexed: set[tuple[str, str]] = set()
