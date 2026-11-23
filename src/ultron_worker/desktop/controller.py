@@ -178,7 +178,7 @@ class App:
             conn.request("GET", "/api/state", headers={"Host": f"{s.gui_host}:{s.gui_port}"})
             resp = conn.getresponse()
             return json.loads(resp.read()) if resp.status == 200 else None
-        except (OSError, ValueError):
+        except (OSError, ValueError, http.client.HTTPException):
             return None
         finally:
             conn.close()
