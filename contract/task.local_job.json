@@ -12,15 +12,16 @@
     "blocked": {"type": ["string", "null"], "minLength": 1, "maxLength": 2000},
     "job": {
       "type": "object",
-      "required": ["kind", "inputs", "model", "output", "budget_minutes"],
+      "required": ["kind", "inputs", "output", "budget_minutes"],
       "properties": {
-        "kind": {"type": "string", "minLength": 1, "description": "A job kind registered on the runner: vision_tag, text_batch, embeddings, transcribe (v1)."},
+        "kind": {"type": "string", "minLength": 1, "description": "A job kind registered on the runner: vision_tag, text_batch, embeddings, transcribe (v1), folder_inventory."},
         "inputs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "description": "Files/folders on Ultron, under the runner's allowed_roots."},
-        "model": {"type": "string", "minLength": 1, "description": "Ollama model tag (e.g. llava:13b) or faster-whisper model (e.g. large-v3)."},
+        "model": {"type": "string", "minLength": 1, "description": "Ollama model tag (e.g. llava:13b) or faster-whisper model (e.g. large-v3). Required by every kind except folder_inventory (model-free)."},
         "output": {"type": "string", "minLength": 1, "description": "Output file (.json/.jsonl) or folder (transcribe) on Ultron or its Dropbox."},
         "budget_minutes": {"type": "number", "exclusiveMinimum": 0, "maximum": 10080, "description": "Per-job wall-clock budget (active time; sleep doesn't count). Set per card; hours/overnight are normal."},
         "params": {"type": "object", "description": "Kind-specific options (prompt, max_tags, video_frames, language, ...)."}
       },
+      "allOf": [{"if": {"properties": {"kind": {"const": "folder_inventory"}}}, "else": {"required": ["model"]}}],
       "additionalProperties": false
     }
   },

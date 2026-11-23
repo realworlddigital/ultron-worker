@@ -22,6 +22,35 @@ Example `data`:
          "params": {"max_tags": 20, "video_frames": 4}}}
 ```
 
+## `folder_inventory` (model-free NAS walk + unindexed diff)
+
+`model` is omitted (every other kind requires it). `inputs` are folders, absolute or
+`ROOT/relative/...` through the media roots, under `runner.allowed_roots` and under a named media
+root. Optional `params`: `exclude` (extra folder names to skip; `_index`, `@eaDir`, `#recycle`,
+`#snapshot`, `$RECYCLE.BIN`, `System Volume Information` and macOS system folders always are),
+`group_depth` (roll the per-folder counts up to the first N folder levels under the root).
+
+```json
+{"title": "Inventory GUILD-RAW-Media", "owner": "david", "executor": "local-ultron",
+ "job": {"kind": "folder_inventory", "inputs": ["GUILD-RAW-Media"],
+         "output": "GUILD-RAW-Media/_inventory/2026-11-22.jsonl", "budget_minutes": 60}}
+```
+
+- **Output** (`.jsonl`): one record per media file (vision_tag's image + video extensions),
+  `{"root": "GUILD-RAW-Media", "rel": "Guild Hall/2026-10-GH NATICK/C001.MP4",
+  "size_bytes": 123, "mtime": "<ISO UTC>", "media": "video"}`. Folder symlinks aren't followed.
+- **Diff**: for each root walked, the TOC `<root>/_index/catalog.jsonl` is read (one JSON object
+  per indexed folder: `{"root", "folder", "index", "files", "tagged", "skipped", "failed",
+  "model", "updated_at"}`, `index` root-relative), then every folder index it lists. A file with
+  any record there (tagged, failed or skipped; identity = root + relpath) is indexed. No TOC: the
+  note says so and every file is unindexed. An unreadable TOC parks the card; an unreadable
+  listed index is named in the note and its files count as unindexed.
+- **Result note**: headline (`N media files (... video, ... image, ... GB) in F folders; U
+  unindexed in G folders`), then `Unindexed files: U of N` and one line per folder with
+  unindexed files, `- <root>/<folder>: <unindexed>/<files>` (cut to fit the note, with a pointer
+  to the sidecar). `<output stem>.unindexed.json` beside the output has the full table
+  (`folders: [{"root", "folder", "files", "unindexed"}]`).
+
 ## Lifecycle (`task.states.local_job`)
 
 ```

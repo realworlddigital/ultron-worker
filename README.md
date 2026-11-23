@@ -21,6 +21,7 @@ transcription burn no Devin ACU or API tokens. A localhost status page shows it 
 | `text_batch` | runs `params.prompt` (with `{text}`) over each `.txt/.md/.json/.jsonl/.csv` item | Ollama text model, e.g. `qwen2.5:14b` | `.jsonl` / `.json` |
 | `embeddings` | embeds each text item | Ollama embedding model, e.g. `nomic-embed-text` | `.jsonl` / `.json` |
 | `transcribe` | transcribes audio/video with faster-whisper (if installed) | whisper size, e.g. `large-v3` | folder: `<name>.txt` + `<name>.segments.json` per file, plus `index.json` |
+| `folder_inventory` | model-free stat walk of media folders (vision_tag extensions) + unindexed diff against `<root>/_index/catalog.jsonl` | none (omit `model`) | `.jsonl` (one `{root, rel, size_bytes, mtime, media}` per file) + `<stem>.unindexed.json` |
 
 ComfyUI/media generation is not in v1. To add a kind, write a module that subclasses
 `ultron_worker.jobs.JobKind` and calls `register(...)`, then list it under `runner.job_modules`
