@@ -211,3 +211,87 @@ def test_item_timing_counts_calls() -> None:
     with t.phase("model"):
         pass
     assert t.calls == {"model": 2} and t.seconds["model"] >= 0
+
+
+class FlakyEvents(FakeBackbone):
+    """The next ``fail`` event posts hit a 502, then the tunnel is back."""
+
+    fail = 0
+
+    def _send(self, method, path, params, body, *, timeout=30.0):  # type: ignore[no-untyped-def]
+        if path == "/events" and self.fail:
+            self.fail -= 1
+            self.sent.append((method, path))
+            self.timeouts.append(timeout)
+            raise BackboneUnavailable("backbone 502")
+        return super()._send(method, path, params, body, timeout=timeout)
+
+
+def test_report_waits_for_queued_job_events(make, library, tmp_path, cfg) -> None:
+    bb = FlakyEvents(cfg)
+    runner, _, ollama = make(bb=bb)
+    out = tmp_path / "tags.jsonl"
+    bb.add("t1", inputs=[str(library)], output=str(out))
+    ollama.hook = lambda n: setattr(bb, "fail", 1) if n == 1 else None
+    runner.tick()
+    assert runner.store.job("t1")["status"] == "finished"
+    assert "ultron.completed" not in bb.actions("t1")  # report waited for the outbox
+    assert bb.tasks["t1"]["status"] == "in_progress"
+    runner.tick()
+    acts = bb.actions("t1")
+    assert len(runner.outbox) == 0 and bb.tasks["t1"]["status"] == "done"
+    assert acts[-1] == "ultron.completed" and "ultron.progress" in acts
+    assert acts.index("ultron.completed") > max(
+        i for i, a in enumerate(acts) if a == "ultron.progress"
+    )
+
+
+def test_cut_short_response_is_unavailable_not_a_crash(cfg, monkeypatch) -> None:
+    import http.client
+    import urllib.request
+
+    from ultron_worker.backbone import Backbone
+
+    class Truncated:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *exc):  # type: ignore[no-untyped-def]
+            return False
+
+        def read(self):  # type: ignore[no-untyped-def]
+            raise http.client.IncompleteRead(b"{", 10)
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: Truncated())
+    with pytest.raises(BackboneUnavailable):
+        Backbone(cfg).request("GET", "/me")
+
+
+def test_runner_gui_cut_short_does_not_kill_the_monitor(tmp_path, monkeypatch) -> None:
+    import http.client
+
+    from ultron_worker.desktop import controller
+
+    write_config(tmp_path, tmp_path / "state")
+    app = App(
+        Install(tmp_path, config=tmp_path / "config.toml"),
+        autostart=Autostart(["x"], None),
+        wake_lock=WakeLock(lambda f: 1),
+    )
+
+    class Conn:
+        def __init__(self, *a, **k) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def request(self, *a, **k) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def getresponse(self):  # type: ignore[no-untyped-def]
+            raise http.client.IncompleteRead(b"{", 10)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(controller.http.client, "HTTPConnection", Conn)
+    assert app.settings.gui_enabled
+    assert app.runner_state() is None and app.keep_awake() is False

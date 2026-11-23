@@ -537,6 +537,11 @@ class Runner:
                 lambda: self.bb.transition(tid, "needs_david", note=job["error"][:500]),
             ]
         self.flush_outbox()  # the job's own events go out before its completion
+        if len(self.outbox):
+            log.warning(
+                "report for %s deferred: %s job event(s) still queued", tid, len(self.outbox)
+            )
+            return
         try:
             for step, call in enumerate(calls):
                 if step < int(job.get("report_step") or 0):
