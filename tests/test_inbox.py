@@ -270,6 +270,54 @@ def test_acked_command_left_by_a_kill_is_finished(box_cfg, nas):
     assert ("ack", "msc_1") not in bb.media_calls
 
 
+def test_queued_outcome_is_delivered_not_rerun(box_cfg, nas):
+    w, bb, ollama = watcher(box_cfg)
+    bb.sync_command("msc_1", "phone")
+    bb.syncs["msc_1"].update(status="acked")
+    bb.syncs["msc_1"]["data"]["acked_by"] = "ultron-runner"
+    w.db.put("finish:msc_1", "media_sync_finish", "msc_1", {"ok": True, "items": 7, "error": None})
+    bb.down = True
+    assert w.handle_syncs() == 0  # backbone down: nothing runs, the outcome stays queued
+    bb.down = False
+    w.handle_syncs()
+    assert bb.syncs["msc_1"]["status"] == "done" and bb.syncs["msc_1"]["data"]["items"] == 7
+    assert ollama.calls == []  # no second re-scan
+
+
+def test_symlinked_files_are_never_followed(box_cfg, nas, tmp_path):
+    outside = png(tmp_path / "private/secret.png", "S")
+    (nas / "inbox/phone/2026-11-23/link.png").symlink_to(outside)
+    (nas / "inbox/linked").symlink_to(outside.parent, target_is_directory=True)
+    w, _, _ = watcher(box_cfg, busy=lambda: True)
+    w.run_pass()
+    rels = {r["rel"] for r in w.db.q("SELECT rel FROM items")}
+    assert not any("link" in r or "secret" in r for r in rels)
+
+
+def test_replaced_file_retires_the_old_item(box_cfg, nas):
+    w, bb, _ = watcher(box_cfg, busy=lambda: True)
+    w.run_pass()
+    png(nas / "inbox/phone/2026-11-23/tree.png", "D", mtime=OLD + 5)  # new bytes, same name
+    w.run_pass()
+    rows = w.db.q("SELECT status FROM items WHERE rel='inbox/phone/2026-11-23/tree.png'")
+    assert sorted(r["status"] for r in rows) == ["missing", "waiting"]
+    assert bb.media["ingest:ultron-inbox"]["totals"]["photos_waiting"] == 3
+
+
+def test_filing_never_overwrites_other_media(box_cfg, nas):
+    w, _, _ = watcher(box_cfg, busy=lambda: True)
+    w.run_pass()
+    h = w.db.q("SELECT hash FROM items WHERE rel LIKE '%/kitty.png'")[0]["hash"]
+    taken = [nas / "Subjects/Cats/2026-11-23/kitty.png",
+             nas / f"Subjects/Cats/2026-11-23/kitty-{h[:8]}.png"]  # fmt: skip
+    for i, t in enumerate(taken):
+        png(t, f"other{i}")
+    w.busy = lambda: False
+    w.run_pass()
+    assert (nas / f"Subjects/Cats/2026-11-23/kitty-{h[:8]}-2.png").is_file()
+    assert [t.read_bytes()[-6:] for t in taken] == [b"other0", b"other1"]
+
+
 def test_media_scope_is_the_worker_half_only(box_cfg):
     bb = FakeBackbone(box_cfg)
     with pytest.raises(ScopeViolation):
