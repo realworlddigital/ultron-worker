@@ -9,6 +9,7 @@ reports the error and stops. Incremental by a modified-time watermark kept per f
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -26,15 +27,23 @@ from .base import (
     ReadOnlyHttp,
     iso_ts,
     land,
+    media_name,
     today,
 )
 
 FILES = "https://www.googleapis.com/drive/v3/files"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 SCOPE = "https://www.googleapis.com/auth/drive.readonly"
-FIELDS = "nextPageToken,files(id,name,mimeType,modifiedTime,size,md5Checksum)"
+FIELDS = (
+    "nextPageToken,files(id,name,mimeType,modifiedTime,size,md5Checksum,capabilities/canDownload)"
+)
 AUTH_KEYS = ("client_id", "client_secret", "refresh_token")
+log = logging.getLogger(__name__)
 EXPIRED = "Google sign-in expired or revoked: stopped until David signs in again"
+
+
+class _CannotDownload(FeedError):
+    """This one file is listed but the signed-in account may not download it: skip it."""
 
 
 class DriveFeed:
@@ -108,7 +117,7 @@ class DriveFeed:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token()}"}
 
-    def _call(self, fn: Callable[[dict[str, str]], Any]) -> Any:
+    def _call(self, fn: Callable[[dict[str, str]], Any], download: bool = False) -> Any:
         """One Drive call; a 401 drops the access token and retries once with a fresh one."""
         for attempt in (0, 1):
             try:
@@ -119,6 +128,8 @@ class DriveFeed:
                     continue
                 if exc.status == 401:
                     raise AuthRejected(f"{EXPIRED} (401)") from exc
+                if download and (exc.status == 404 or "cannotDownload" in exc.body):
+                    raise _CannotDownload(f"HTTP {exc.status}: {exc.body[:120]}") from exc
                 if exc.status in (403, 404):
                     raise FeedError(
                         f"Drive folder {self.cfg.folder_id} not found or not shared with the "
@@ -161,7 +172,16 @@ class DriveFeed:
                 high = max(high, modified)
                 if state.known(self.feeder_id, fid, modified):
                     continue  # this version already landed (the watermark is inclusive)
-                landed += self._file(f, source_dir, state, stop, {key: high})
+                name = media_name(str(f.get("name") or fid), mime)
+                if name is None or (f.get("capabilities") or {}).get("canDownload") is False:
+                    log.info("gdrive: skipping %s (%s): not downloadable media", fid, mime)
+                    continue
+                try:
+                    landed += self._file({**f, "name": name}, source_dir, state, stop, {key: high})
+                except _CannotDownload as exc:
+                    log.warning(
+                        "gdrive: skipping %s: the sign-in cannot download it (%s)", fid, exc
+                    )
             token = page.get("nextPageToken")
             if not token:
                 break
@@ -193,7 +213,7 @@ class DriveFeed:
             today(),
             name,
             fid,
-            lambda tmp: self._call(lambda h: self.http.download(url, h, tmp, stop)),
+            lambda tmp: self._call(lambda h: self.http.download(url, h, tmp, stop), download=True),
             iso_ts(modified),
             manifest,
         )
