@@ -58,6 +58,7 @@ OUTBOX_LIMIT = 200  # queued job events kept while the backbone is unreachable (
 # Flushes (each after a good poll) an event may fail before it's dropped, so one event the
 # backbone keeps failing can't hold the queue, or the card reports waiting on it, forever.
 EVENT_ATTEMPTS = 5
+ERROR_CHARS = 200  # of a failed item's error in a progress summary (the event data has all of it)
 
 
 @dataclass
@@ -445,16 +446,18 @@ class Runner:
                 )
                 active = self.store.add_active(tid, clock.lap())
                 self.board.update_current(done=done, elapsed_s=round(active))
+                name, post = _item_name(item, ctx), time.perf_counter() - post_started
                 if time.monotonic() - last_progress >= self.cfg.progress_seconds:
                     last_progress = time.monotonic()
-                    self._progress(tid, done, len(items), item.label, active)
+                    last = _last_item(name, result, timing, post) if ctx.timing.seconds else None
+                    self._progress(tid, done, len(items), item.label, active, last)
                 log.info(
                     _item_line(
-                        _item_name(item, ctx),
+                        name,
                         result,
                         timing,
                         ctx.timing.calls,
-                        post=time.perf_counter() - post_started,
+                        post=post,
                         slept=self.board.sleep_seconds_total - slept_before,
                     )
                 )
@@ -484,17 +487,33 @@ class Runner:
         finally:
             self.store.add_active(tid, clock.lap())
 
-    def _progress(self, tid: str, done: int, total: int, item: str | None, active: float) -> None:
+    def _progress(
+        self,
+        tid: str,
+        done: int,
+        total: int,
+        item: str | None,
+        active: float,
+        last: dict[str, Any] | None = None,
+    ) -> None:
+        """``last``: the just-finished item's outcome and phases (job kinds that time phases),
+        appended after the count prefix that existing readers key on."""
         pct = round(100.0 * done / total, 1) if total else 0.0
+        summary = f"Ultron {tid}: {done}/{total} ({pct}%)"
+        extra: dict[str, Any] = {}
+        if last is not None:
+            summary += f" - last item {_last_item_text(last)}"
+            extra["last_item"] = last
         self._safe_event(
             "progress",
             tid,
-            f"Ultron {tid}: {done}/{total} ({pct}%)",
+            summary,
             done=done,
             total=total,
             percent=pct,
             current_item=item,
             elapsed_s=round(active),
+            **extra,
         )
 
     def _fail(self, tid: str, error: str, *, retryable: bool) -> None:
@@ -704,6 +723,35 @@ def _item_name(item: WorkItem, ctx: JobContext) -> str:
     return f"{found[0]}/{found[1]}" if found else item.label
 
 
+def _outcome(result: dict[str, Any]) -> str:
+    return "skipped" if "skipped" in result else "failed" if "failed" in result else "done"
+
+
+def _last_item(
+    name: str, result: dict[str, Any], timing: dict[str, float], post: float
+) -> dict[str, Any]:
+    """The ``last_item`` payload of a progress event: the same phases as the item's log line."""
+    outcome = _outcome(result)
+    phases = {k: v for k, v in timing.items() if k != "total"}
+    phases["post"] = round(post, 3)
+    return {
+        "name": name,
+        "outcome": outcome,
+        "phases": phases,
+        "total_s": round(timing["total"] + post, 3),
+        "error": None if outcome == "done" else str(result[outcome]),
+    }
+
+
+def _last_item_text(last: dict[str, Any]) -> str:
+    phases = ", ".join(f"{k} {v:.1f}s" for k, v in last["phases"].items())
+    if last["outcome"] == "done":
+        return f"{last['name']}: {phases}"
+    error = " ".join(last["error"].split())
+    error = error if len(error) <= ERROR_CHARS else error[: ERROR_CHARS - 3] + "..."
+    return f"{last['name']} {last['outcome']} ({phases}): {error}"  # error last: cut first
+
+
 def _item_line(
     name: str,
     result: dict[str, Any],
@@ -713,7 +761,7 @@ def _item_line(
     post: float,
     slept: float,
 ) -> str:
-    outcome = "skipped" if "skipped" in result else "failed" if "failed" in result else "done"
+    outcome = _outcome(result)
     parts = []
     for phase, sec in timing.items():
         if phase == "total":

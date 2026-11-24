@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 
@@ -16,7 +17,7 @@ from ultron_worker.desktop.controller import App
 from ultron_worker.desktop.layout import Install
 from ultron_worker.desktop.wakelock import HOLD, RELEASE, WakeLock
 from ultron_worker.jobs.vision import VisionTag
-from ultron_worker.runner import Outbox, _Event
+from ultron_worker.runner import Outbox, _Event, _last_item, _last_item_text
 
 from .conftest import PNG, FakeBackbone, FakeOllama
 from .test_log_and_lock import write_config
@@ -335,3 +336,94 @@ def test_a_failing_event_gets_one_send_per_good_poll(make, library, tmp_path, cf
     runner.tick()  # poll flush fails; the report (finished job) must not retry it this poll
     assert bb.sent.count(("POST", "/events")) - before == 1
     assert runner.outbox.pending("t1") == 1 and bb.tasks["t1"]["status"] == "in_progress"
+
+
+PREFIX = re.compile(r"^Ultron t1: (\d+)/(\d+) \((\d+(?:\.\d+)?)%\)")
+
+
+def _item_progress(bb: FakeBackbone) -> list[dict]:
+    return [e for e in bb.events if e["action"] == "ultron.progress" and e["data"]["current_item"]]
+
+
+def test_progress_event_carries_the_last_items_phases(make, tmp_path, monkeypatch) -> None:
+    lib = tmp_path / "Guild Hall"
+    lib.mkdir()
+    (lib / "C8563.MP4").write_bytes(b"\0" * 16)
+
+    def fake_frames(self, path, scratch, n):  # type: ignore[no-untyped-def]
+        time.sleep(0.05)
+        scratch.mkdir(parents=True, exist_ok=True)
+        frame = scratch / "frame00.png"
+        frame.write_bytes(PNG)
+        return [frame]
+
+    monkeypatch.setattr(VisionTag, "_frames", fake_frames)
+    runner, bb, _ = make()
+    bb.add("t1", inputs=[str(lib)], output=str(tmp_path / "tags.jsonl"))
+    runner.tick()
+    assert bb.tasks["t1"]["status"] == "done"
+    [event] = _item_progress(bb)
+    summary = event["summary"]
+    assert summary.startswith("Ultron t1: 1/1 (100.0%) - last item ")  # count prefix unchanged
+    name = f"{tmp_path.name}/Guild Hall/C8563.MP4"
+    assert f"- last item {name}: stat " in summary
+    for phase in ("frames ", "model ", "other ", "post "):
+        assert f", {phase}" in summary, summary
+    assert re.search(r"frames \d+\.\ds", summary)
+    last = event["data"]["last_item"]
+    assert last["name"] == name and last["outcome"] == "done" and last["error"] is None
+    assert {"stat", "frames", "model", "other", "post"} == set(last["phases"])
+    assert last["phases"]["frames"] >= 0.05
+    timing = runner.store.item_timing("t1", str((lib / "C8563.MP4").resolve()))
+    assert timing is not None and last["phases"]["frames"] == timing["frames"]  # same values
+    assert last["total_s"] >= timing["total"]
+    assert event["data"]["done"] == 1 and event["data"]["total"] == 1  # existing fields kept
+    # job start / output-written progress has no last item: plain count, as before
+    plain = [e for e in bb.events if e["action"] == "ultron.progress" and e not in [event]]
+    assert plain and all(PREFIX.fullmatch(e["summary"]) for e in plain)
+    assert all("last_item" not in e["data"] for e in plain)
+
+
+class GarbageOllama(FakeOllama):
+    def generate(self, model, prompt, **kw):  # type: ignore[no-untyped-def]
+        super().generate(model, prompt, **kw)
+        return "not json"
+
+
+def test_failed_item_progress_says_so_with_its_error(make, library, tmp_path) -> None:
+    runner, bb, _ = make(ollama=GarbageOllama())
+    bb.add("t1", inputs=[str(library / "a.png")], output=str(tmp_path / "tags.jsonl"))
+    runner.tick()
+    [event] = _item_progress(bb)[:1]
+    summary = event["summary"]
+    assert summary.startswith("Ultron t1: 0/1 (0.0%) - last item ")
+    assert re.search(r" failed \(stat \d+\.\ds, image \d+\.\ds, model \d+\.\ds, ", summary), summary
+    assert "s): unusable model reply after a repair re-ask" in summary
+    last = event["data"]["last_item"]
+    assert last["outcome"] == "failed"
+    assert last["error"].startswith("unusable model reply after a repair re-ask")
+    assert "model" in last["phases"] and "post" in last["phases"]
+
+
+def test_long_item_error_is_shortened_in_the_summary_only() -> None:
+    last = _last_item("x.png", {"skipped": "boom " * 100}, {"stat": 0.01, "total": 0.02}, 0.0)
+    text = _last_item_text(last)
+    assert text.startswith("x.png skipped (stat 0.0s, post 0.0s): boom boom")
+    assert text.endswith("...") and len(text) < 260 and last["error"] == "boom " * 100
+
+
+def test_kinds_without_phases_keep_the_plain_progress_summary(make, library, tmp_path) -> None:
+    runner, bb, _ = make()
+    bb.add(
+        "t1",
+        kind="folder_inventory",
+        model=None,
+        inputs=[str(library)],
+        output=str(tmp_path / "inventory.jsonl"),
+    )
+    runner.tick()
+    assert bb.tasks["t1"]["status"] == "done", bb.events
+    events = [e for e in bb.events if e["action"] == "ultron.progress"]
+    assert _item_progress(bb)  # it does report per item...
+    assert all(PREFIX.fullmatch(e["summary"]) for e in events)  # ...in today's format
+    assert all("last_item" not in e["data"] for e in events)

@@ -80,7 +80,13 @@ frame scratch dirs a hard kill left under `state_dir\jobs\<task>\frames`.
    `incl. ~Ns asleep` when the laptop slept mid-item); the phases are also kept in the item's
    checkpoint row (`items.timing`). Enumeration is logged once per job.
 3. **Progress.** `ultron.progress` events (done/total, current file) go out at most every
-   `progress_seconds`. A heartbeat goes to `system/status/ultron-runner` (`idle` / `working` /
+   `progress_seconds`. For job kinds that time phases (vision_tag, and every kind that calls the
+   model), an event sent after an item appends that item's phases after the unchanged
+   `Ultron <task>: N/M (P%)` prefix, e.g. `Ultron t1: 31/67 (46.3%) - last item Guild
+   Hall/2026-10-GH NATICK/C8563.MP4: stat 0.0s, frames 12.0s, model 70.1s, other 0.1s, post
+   0.3s`, or `... - last item <file> failed (<phases>): <error>` for a failed/skipped item; the
+   same values ride in the event data as `last_item` (`name`, `outcome`, `phases`, `total_s`,
+   `error`). A heartbeat goes to `system/status/ultron-runner` (`idle` / `working` /
    `paused-by-sleep`). The job thread never waits on the backbone between items: its events go to
    a small in-memory outbox (newest progress per card kept while the backbone is down) that a
    sender thread and the poll loop flush; every backbone write gives up after 10 s. A dead tunnel
