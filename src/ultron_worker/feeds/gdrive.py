@@ -177,7 +177,7 @@ class DriveFeed:
                     log.info("gdrive: skipping %s (%s): not downloadable media", fid, mime)
                     continue
                 try:
-                    landed += self._file({**f, "name": name}, source_dir, state, stop, {key: high})
+                    landed += self._file(f, name, source_dir, state, stop, {key: high})
                 except _CannotDownload as exc:
                     log.warning(
                         "gdrive: skipping %s: the sign-in cannot download it (%s)", fid, exc
@@ -191,6 +191,7 @@ class DriveFeed:
     def _file(
         self,
         f: dict[str, Any],
+        landing_name: str,
         source_dir: Path,
         state: FeedState,
         stop: threading.Event,
@@ -211,7 +212,7 @@ class DriveFeed:
         target, size = land(
             source_dir,
             today(),
-            name,
+            landing_name,
             fid,
             lambda tmp: self._call(lambda h: self.http.download(url, h, tmp, stop), download=True),
             iso_ts(modified),

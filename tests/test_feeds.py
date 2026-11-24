@@ -553,3 +553,14 @@ def test_landing_names_are_ones_the_watcher_ingests(feed_cfg, nas, monkeypatch):
     assert runner.pull("discord")["items"] == 1
     assert [p.name for p in (nas / "inbox/discord" / base_today()).glob("*.png")] == ["noext.png"]
     assert not any("heic" in u for u in http.downloads())
+
+
+def test_drive_manifest_keeps_the_original_name(feed_cfg, nas):
+    runner, w, bb, http = setup(feed_cfg)
+    http.files = [drive_file("f9", "IMG_9", "image/jpeg", "2026-11-23T10:00:00.000Z")]
+    http.blobs[media_url("f9")] = PNG
+    assert runner.pull("gdrive")["items"] == 1
+    day = nas / "inbox/gdrive" / base_today()
+    line = json.loads((day / "manifest.jsonl").read_text().splitlines()[0])
+    assert (line["file"], line["name"]) == ("IMG_9.jpg", "IMG_9")
+    assert (day / "IMG_9.jpg").exists()
