@@ -261,6 +261,13 @@ def land(
     The file keeps the source's timestamp as its mtime."""
     day_dir = source_dir / day
     day_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = day_dir / MANIFEST
+    if (
+        day_dir.is_symlink()
+        or day_dir.resolve().parent != source_dir.resolve()
+        or manifest_path.is_symlink()
+    ):
+        raise FeedError(f"refusing {day_dir}: not a plain folder of the feeder's inbox")
     target = _free(day_dir, safe_name(name), source_id)
     tmp = day_dir / f".{target.name}.part"
     try:
@@ -272,7 +279,8 @@ def land(
         with contextlib.suppress(OSError):
             tmp.unlink()
     line = {"file": target.name, **manifest, "bytes": size, "pulled_at": utc_now().isoformat()}
-    with open(day_dir / MANIFEST, "a", encoding="utf-8") as fh:
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(manifest_path, flags, 0o644), "a", encoding="utf-8") as fh:
         fh.write(json.dumps(line, ensure_ascii=False) + "\n")
     return target, size
 
