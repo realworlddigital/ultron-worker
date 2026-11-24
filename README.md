@@ -104,6 +104,37 @@ frame scratch dirs a hard kill left under `state_dir\jobs\<task>\frames`.
    heartbeat stops. They start on the first poll after it wakes. If the backbone is unreachable in
    the middle of a job, the job keeps running locally and reports when the backbone is back.
 
+## Media inbox watcher
+
+`[media_inbox]` (off by default) makes the runner the single ingest point for the NAS media
+inbox, `<root>/<inbox>/<source>/<YYYY-MM-DD>/`, in its own thread beside the card loop. Each
+pass (every `interval_seconds`, and at once for a backbone sync command naming one of its feeders):
+
+- **Inventory + dedupe**: new or changed files are hashed (sha256; unchanged size + mtime reuse
+  the stored hash). One record per content; the same bytes arriving again are noted on that
+  record (`duplicates`) and left in place, never a second record. Files younger than
+  `settle_seconds` wait for the next pass.
+- **Tagging**: waiting items are tagged with `vision_tag`'s model call (Glimmer by default),
+  `tag_per_pass` at a time, and only while no card job holds the model.
+- **Filing**: the one subject folder whose `[media_inbox.subjects]` tags best match gets the
+  file, as `<subject>/<YYYY-MM-DD>/<name>`. No match, a tie, or no usable tags after
+  `review_after_attempts` = the file stays in the inbox flagged `review`. A move is recorded
+  before it starts and finished (or redone) by the next pass after a kill.
+- **Catalog**: `_index/inbox-tags.jsonl` (root + relpath, size + mtime, sha256, feeder, review
+  reason or `failed`; never an absolute path) is upserted into `_index/catalog.jsonl` and
+  merged into `all-tags.jsonl` through the same machinery as `vision_tag`.
+- **Backbone** (apollo-backbone `docs/media-inbox.md`): feeders registered with
+  `worker = ultron-runner`, one `record.media_item` per content, the heartbeat
+  (`PUT /media/ingest/{watcher}`: photos / videos / bytes still in the inbox per source and in
+  total, last run status) and, for native feeders, the last pull inferred from the newest file
+  in their folder. Sync commands are acked and finished: an api feeder runs its registered
+  puller (`ultron_worker.inbox.register_puller`) then re-scans; a native feeder only re-scans:
+  no Synology pull is ever claimed.
+
+Every write goes through a durable SQLite outbox (`<state_dir>/inbox.sqlite3`), one row per
+record with the newest state winning, replayed after an outage or a restart. The runner still
+can't be stopped remotely; a local stop interrupts a pass between files and the next pass resumes.
+
 ## Status GUI
 
 The desktop app shows it in its window; it is also at **http://127.0.0.1:8765/**. It shows the runner state, the current job (card title

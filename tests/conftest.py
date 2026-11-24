@@ -41,6 +41,9 @@ class FakeBackbone(Backbone):
         self.down = False
         self.me_actor = cfg.actor
         self._seq = itertools.count(1)
+        self.media: dict[str, dict[str, Any]] = {}  # "<kind>:<id>" -> last body
+        self.media_calls: list[tuple[str, str]] = []
+        self.syncs: dict[str, dict[str, Any]] = {}
 
     def add(
         self,
@@ -115,7 +118,47 @@ class FakeBackbone(Backbone):
         if path.startswith("/system/status/"):
             self.statuses.append(dict(body or {}))
             return {"ok": True}
+        if parts[0] == "media":
+            return self._media(method, parts[1:], params, body or {})
         raise AssertionError(f"unexpected {method} {path}")
+
+    def _media(self, method: str, parts: list[str], params: Any, body: dict[str, Any]) -> Any:
+        kind = parts[0]
+        if kind == "sync" and method == "GET":
+            status = (params or {})["status"]
+            return {"items": [c for c in self.syncs.values() if c["status"] == status]}
+        if kind == "sync":
+            cmd = self.syncs[parts[1]]
+            self.media_calls.append((parts[2], parts[1]))
+            if parts[2] == "ack":
+                cmd["status"] = "acked"
+                cmd["data"]["acked_by"] = self.actor
+            else:
+                cmd["status"] = "done" if body["ok"] else "failed"
+                cmd["data"].update(items=body["items"], error=body["error"])
+            return cmd
+        if kind == "feeders" and len(parts) == 3:
+            if f"feeders:{parts[1]}" not in self.media:
+                raise BackboneError(404, f"no media feeder {parts[1]!r}")
+            key = f"pull:{parts[1]}"
+        else:
+            key = f"{kind}:{parts[1]}"
+        if kind == "ingest":
+            sums = {
+                k: sum(s[k] for s in body["sources"])
+                for k in ("photos_waiting", "videos_waiting", "bytes_waiting")
+            }
+            assert sums == body["totals"]
+        self.media_calls.append((kind if len(parts) < 3 else "pull", parts[1]))
+        self.media[key] = {**self.media.get(key, {}), **body}
+        return {"ok": True}
+
+    def sync_command(self, cid: str, feeder_id: str, action: str = "rescan") -> None:
+        self.syncs[cid] = {
+            "id": cid,
+            "status": "pending",
+            "data": {"feeder_id": feeder_id, "action": action, "requested_by": "david"},
+        }
 
     def actions(self, tid: str | None = None) -> list[str]:
         return [

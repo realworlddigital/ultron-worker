@@ -26,6 +26,32 @@ job_modules = []
 # [media_roots]
 # GUILD-RAW-Media = "\\\\GUILD-NAS\\GUILD-RAW-Media"
 
+# The NAS media inbox watcher (<root>/<inbox>/<source>/<YYYY-MM-DD>/). Off until David has
+# confirmed the live media root and inbox folder; root names a [media_roots] entry.
+# [media_inbox]
+# enabled = false
+# root = "GUILD-RAW-Media"
+# inbox = "inbox"
+# watcher = "ultron-inbox"        # the heartbeat's watcher id on the backbone
+# interval_seconds = 300          # cadence; a sync command re-scans immediately
+# settle_seconds = 60             # files younger than this may still be copying
+# model = "muse-glimmer:30b"      # Glimmer, the local vision default
+# tag_per_pass = 50
+# review_after_attempts = 3       # unusable model replies before an item is flagged
+#
+# Source folders under the inbox. Unlisted folders are native feeders named after the folder.
+# [media_inbox.feeders.phone]
+# kind = "native"                 # filled by the NAS (Synology Photos / Dropbox sync)
+# display_name = "Phone"
+# folder = "phone"
+# [media_inbox.feeders.discord]
+# kind = "api"                    # pulled by a puller a job_modules module registers
+#
+# Subject folder (root-relative) -> tags that file an item there. No single best match =
+# the item stays in the inbox flagged for review.
+# [media_inbox.subjects]
+# "Brands/Guild" = ["guild", "guild logo"]
+
 [ollama]
 url = "http://127.0.0.1:11434"   # localhost only; the runner is Ollama's only caller
 

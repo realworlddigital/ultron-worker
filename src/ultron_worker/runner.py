@@ -31,6 +31,7 @@ from typing import Any
 from . import __version__, jobs
 from .backbone import Backbone, BackboneError, BackboneUnavailable, ScopeViolation
 from .config import Config
+from .inbox import InboxWatcher
 from .jobs.base import (
     ItemFailed,
     ItemRetry,
@@ -184,6 +185,15 @@ class Runner:
         self.outbox = Outbox()
         self._backbone_down = False  # the last flush hit a dead backbone: wait for a good poll
         jobs.load(cfg.job_modules)
+        self.inbox: InboxWatcher | None = None
+        if cfg.media_inbox.enabled:
+            self.inbox = InboxWatcher(
+                cfg,
+                self.bb,
+                self.ollama,
+                stop=self.stop,
+                busy=lambda: self._job_thread is not None and self._job_thread.is_alive(),
+            )
 
     def sweep_scratch(self) -> int:
         """Startup only (no job running): drop frame scratch dirs orphaned by a hard kill."""
@@ -598,6 +608,11 @@ class Runner:
                     "done": cur.get("done"),
                     "total": cur.get("total"),
                     "queue": len(self.board.snapshot()["queue"]),
+                    **(
+                        {"inbox": {**self.inbox.last, "pending": self.inbox.last_counts}}
+                        if self.inbox is not None
+                        else {}
+                    ),
                 },
             )
             self.board.contact(True)
@@ -625,6 +640,15 @@ class Runner:
         watcher.start()
         sender = threading.Thread(target=self._send_outbox, name="outbox", daemon=True)
         sender.start()
+        inbox = None
+        if self.inbox is not None:
+            inbox = threading.Thread(
+                target=self.inbox.run_forever,
+                args=(self.cfg.poll_seconds,),
+                name="inbox",
+                daemon=True,
+            )
+            inbox.start()
         while not self.stop.is_set():
             self.poll_now.clear()
             self.tick()
@@ -634,6 +658,8 @@ class Runner:
         watcher.join(timeout=WATCH_STEP + 1)
         self.outbox.ready.set()
         sender.join(timeout=WATCH_STEP + 1)
+        if inbox is not None:
+            inbox.join(timeout=60)
 
 
 class _ActiveClock:
