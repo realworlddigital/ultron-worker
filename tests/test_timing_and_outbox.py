@@ -397,8 +397,8 @@ def test_failed_item_progress_says_so_with_its_error(make, library, tmp_path) ->
     [event] = _item_progress(bb)[:1]
     summary = event["summary"]
     assert summary.startswith("Ultron t1: 0/1 (0.0%) - last item ")
-    assert " failed: unusable model reply after a repair re-ask" in summary
-    assert re.search(r"\(stat \d+\.\ds, image \d+\.\ds, model \d+\.\ds, ", summary), summary
+    assert re.search(r" failed \(stat \d+\.\ds, image \d+\.\ds, model \d+\.\ds, ", summary), summary
+    assert "s): unusable model reply after a repair re-ask" in summary
     last = event["data"]["last_item"]
     assert last["outcome"] == "failed"
     assert last["error"].startswith("unusable model reply after a repair re-ask")
@@ -408,10 +408,8 @@ def test_failed_item_progress_says_so_with_its_error(make, library, tmp_path) ->
 def test_long_item_error_is_shortened_in_the_summary_only() -> None:
     last = _last_item("x.png", {"skipped": "boom " * 100}, {"stat": 0.01, "total": 0.02}, 0.0)
     text = _last_item_text(last)
-    assert text.startswith("x.png skipped: boom boom") and text.endswith(
-        "... (stat 0.0s, post 0.0s)"
-    )
-    assert len(text) < 260 and last["error"] == "boom " * 100
+    assert text.startswith("x.png skipped (stat 0.0s, post 0.0s): boom boom")
+    assert text.endswith("...") and len(text) < 260 and last["error"] == "boom " * 100
 
 
 def test_kinds_without_phases_keep_the_plain_progress_summary(make, library, tmp_path) -> None:

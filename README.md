@@ -84,7 +84,7 @@ frame scratch dirs a hard kill left under `state_dir\jobs\<task>\frames`.
    model), an event sent after an item appends that item's phases after the unchanged
    `Ultron <task>: N/M (P%)` prefix, e.g. `Ultron t1: 31/67 (46.3%) - last item Guild
    Hall/2026-10-GH NATICK/C8563.MP4: stat 0.0s, frames 12.0s, model 70.1s, other 0.1s, post
-   0.3s`, or `... - last item <file> failed: <error> (<phases>)` for a failed/skipped item; the
+   0.3s`, or `... - last item <file> failed (<phases>): <error>` for a failed/skipped item; the
    same values ride in the event data as `last_item` (`name`, `outcome`, `phases`, `total_s`,
    `error`). A heartbeat goes to `system/status/ultron-runner` (`idle` / `working` /
    `paused-by-sleep`). The job thread never waits on the backbone between items: its events go to

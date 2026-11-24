@@ -749,7 +749,7 @@ def _last_item_text(last: dict[str, Any]) -> str:
         return f"{last['name']}: {phases}"
     error = " ".join(last["error"].split())
     error = error if len(error) <= ERROR_CHARS else error[: ERROR_CHARS - 3] + "..."
-    return f"{last['name']} {last['outcome']}: {error} ({phases})"
+    return f"{last['name']} {last['outcome']} ({phases}): {error}"  # error last: cut first
 
 
 def _item_line(
