@@ -206,6 +206,10 @@ def _check(runner: Runner) -> int:
         reachable = "404" in str(exc) or "not found" in str(exc).lower()
         print(f"ollama: {'OK' if reachable else 'FAILED ' + str(exc)}")
         ok = ok and reachable
+    if runner.feeds is not None:
+        for fid, feed in runner.feeds.feeds.items():
+            problem = feed.problem()
+            print(f"feeder {fid}: {'ready' if problem is None else problem}")
     print(
         f"job kinds: {', '.join(jobs.kinds())}; faster-whisper "
         f"{'installed' if available() else 'not installed'}"

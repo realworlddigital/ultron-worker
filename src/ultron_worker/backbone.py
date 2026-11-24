@@ -43,6 +43,7 @@ ALLOWED = (
     ("PUT", re.compile(rf"/media/ingest/{FEEDER}")),
     ("PUT", re.compile(rf"/media/items/{MEDIA_ITEM}")),
     ("GET", re.compile(r"/media/sync")),
+    ("GET", re.compile(r"/media/inbox")),  # read-only: the feeders' paused flag
     ("POST", re.compile(rf"/media/sync/{TASK_ID}/(ack|finish)")),
 )
 
@@ -234,6 +235,15 @@ class Backbone:
 
     def media_item(self, item_id: str, body: dict[str, Any]) -> Any:
         return self.request("PUT", f"/media/items/{item_id}", body=body)
+
+    def media_feeders(self) -> list[dict[str, Any]]:
+        """The registry's feeder records (``feeder_id`` + ``status``), from the Media tab read."""
+        got = self.request("GET", "/media/inbox", params={"limit": 1}) or {}
+        out = []
+        for r in got.get("feeders") or []:
+            data = r.get("data") if isinstance(r.get("data"), dict) else r
+            out.append({**data, "feeder_id": data.get("feeder_id") or r.get("feeder_id")})
+        return out
 
     def media_syncs(self, status: str = "pending") -> list[dict[str, Any]]:
         return list(self.request("GET", "/media/sync", params={"status": status}).get("items", []))

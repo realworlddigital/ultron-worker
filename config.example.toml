@@ -44,13 +44,28 @@ job_modules = []
 # kind = "native"                 # filled by the NAS (Synology Photos / Dropbox sync)
 # display_name = "Phone"
 # folder = "phone"
-# [media_inbox.feeders.discord]
+# [media_inbox.feeders.scanner]
 # kind = "api"                    # pulled by a puller a job_modules module registers
 #
 # Subject folder (root-relative) -> tags that file an item there. No single best match =
 # the item stays in the inbox flagged for review.
 # [media_inbox.subjects]
 # "Brands/Guild" = ["guild", "guild logo"]
+
+# API feeders (need [media_inbox]): each pulls on its cadence and on Sync now into
+# <inbox>/<folder>/<YYYY-MM-DD>/ with a manifest.jsonl line per file. Read-only against the
+# source. A missing id or credential reports status error "not configured" and stops.
+# [media_feeders.discord]
+# enabled = false
+# guild_id = ""                   # the Guild Hall server id (David)
+# thread_id = ""                  # the ONE thread to read (David)
+# token_file = ""                 # David's bot token file; or set ULTRON_DISCORD_TOKEN
+# interval_seconds = 300
+# [media_feeders.gdrive]
+# enabled = false
+# folder_id = ""                  # the ONE Drive folder (David)
+# auth_file = ""                  # David's Google sign-in (python -m ultron_worker.feeds.gdrive_auth)
+# interval_seconds = 300
 
 [ollama]
 url = "http://127.0.0.1:11434"   # localhost only; the runner is Ollama's only caller

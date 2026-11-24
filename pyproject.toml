@@ -1,6 +1,6 @@
 [project]
 name = "ultron-worker"
-version = "0.3.0"
+version = "0.4.0"
 description = "Ultron local job runner: backbone cards routed to local-ultron run on local models (Ollama, faster-whisper) on David's Surface, with a localhost status GUI."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -8,6 +8,8 @@ dependencies = []
 
 [project.optional-dependencies]
 transcribe = ["faster-whisper>=1.0.0"]
+# David's one-time Google sign-in for the Drive feeder (the feeder itself needs nothing).
+gdrive-auth = ["google-auth-oauthlib>=1.2.0"]
 # The desktop app (python -m ultron_worker.desktop / Ultron.exe): WebView2 window + tray icon.
 desktop = [
     "pywebview>=5.1",

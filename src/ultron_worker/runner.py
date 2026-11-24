@@ -31,6 +31,7 @@ from typing import Any
 from . import __version__, jobs
 from .backbone import Backbone, BackboneError, BackboneUnavailable, ScopeViolation
 from .config import Config
+from .feeds import FeedRunner
 from .inbox import InboxWatcher
 from .jobs.base import (
     ItemFailed,
@@ -194,6 +195,9 @@ class Runner:
                 stop=self.stop,
                 busy=lambda: self._job_thread is not None and self._job_thread.is_alive(),
             )
+        self.feeds: FeedRunner | None = None
+        if self.inbox is not None and cfg.api_feeds():
+            self.feeds = FeedRunner(cfg, self.inbox)
 
     def sweep_scratch(self) -> int:
         """Startup only (no job running): drop frame scratch dirs orphaned by a hard kill."""
@@ -613,6 +617,7 @@ class Runner:
                         if self.inbox is not None
                         else {}
                     ),
+                    **({"feeds": self.feeds.last} if self.feeds is not None else {}),
                 },
             )
             self.board.contact(True)
@@ -649,6 +654,10 @@ class Runner:
                 daemon=True,
             )
             inbox.start()
+        feeds = None
+        if self.feeds is not None:
+            feeds = threading.Thread(target=self.feeds.run_forever, name="feeds", daemon=True)
+            feeds.start()
         while not self.stop.is_set():
             self.poll_now.clear()
             self.tick()
@@ -660,6 +669,8 @@ class Runner:
         sender.join(timeout=WATCH_STEP + 1)
         if inbox is not None:
             inbox.join(timeout=60)
+        if feeds is not None:
+            feeds.join(timeout=60)
 
 
 class _ActiveClock:

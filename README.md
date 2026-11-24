@@ -135,6 +135,35 @@ Every write goes through a durable SQLite outbox (`<state_dir>/inbox.sqlite3`), 
 record with the newest state winning, replayed after an outage or a restart. The runner still
 can't be stopped remotely; a local stop interrupts a pass between files and the next pass resumes.
 
+## Media feeders (Discord thread, Google Drive folder)
+
+`[media_feeders.discord]` and `[media_feeders.gdrive]` (off by default, need `[media_inbox]`) are
+the two api feeders. Each pulls every `interval_seconds` and at once on a Sync now command, lands
+files only in `<inbox>/<folder>/<YYYY-MM-DD>/` (the pull's local date) with one
+`manifest.jsonl` line per file, and reports the pull to the feeder registry (`last_pull_at`,
+`items_24h`, `items_total`, status `connected` / `error` + `last_error`). Tagging, filing and the
+catalog are the watcher's. A feeder David paused in the registry skips its cadence pulls.
+
+- **Discord**: one thread (`guild_id` + `thread_id`); image attachments only; manifest line =
+  attachment id (`source_id`), `message_id`, `author`, `timestamp`. Incremental by the last
+  message id per thread; a known message or attachment id is never downloaded again.
+- **Google Drive**: one folder (`folder_id`); `image/*` and `video/*` only; manifest line =
+  `drive_file_id`, `name`, `modified_time`. Incremental by a modified-time watermark per folder;
+  an edited file (new modified time) lands again, the watcher dedupes the bytes.
+- **Credentials are David's**: the bot token comes from `ULTRON_DISCORD_TOKEN` or `token_file`;
+  the Drive sign-in is the authorized-user JSON at `auth_file`, written once by
+  `python -m ultron_worker.feeds.gdrive_auth --client-secrets <client.json> --out <auth_file>`
+  (Google's standard browser flow, scope `drive.readonly`; `pip install ".[gdrive-auth]"`). The
+  feeders only read them. Missing id or credential = status error `not configured: ...`; a
+  token Discord refuses or a sign-in Google says is expired = status error, and the feeder stays
+  stopped until the token file / sign-in changes. Nothing is prompted for, generated or stored.
+- **Read-only**: the only network calls are GETs to `discord.com`, the Discord CDN and
+  `www.googleapis.com`, plus the OAuth token refresh; attachments are fetched without the bot
+  token, and a credential never follows a redirect to another host.
+
+Pull state (last message id, watermark, every file landed) is `<state_dir>/feeds.sqlite3`.
+`ultron-runner --check` prints each feeder's readiness.
+
 ## Status GUI
 
 The desktop app shows it in its window; it is also at **http://127.0.0.1:8765/**. It shows the runner state, the current job (card title
