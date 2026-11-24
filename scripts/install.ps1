@@ -30,6 +30,9 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $Repo = Split-Path -Parent $PSScriptRoot
+# pip never reads or writes the per-user cache (%LocalAppData%\pip\cache): files there with
+# mixed ownership/ACLs fail installs with Errno 13. The env var covers pip's own children.
+$env:PIP_NO_CACHE_DIR = "1"
 
 $Running = $false
 try { $c = New-Object Net.Sockets.TcpClient; $c.Connect("127.0.0.1", 8764); $c.Close(); $Running = $true } catch {}
@@ -45,12 +48,12 @@ if (-not (Test-Path (Join-Path $Venv "Scripts\python.exe"))) {
   if ($LASTEXITCODE -ne 0) { throw "could not create a Python 3.11+ virtualenv (is Python installed?)" }
 }
 $Py = Join-Path $Venv "Scripts\python.exe"
-& $Py -m pip install --upgrade pip | Out-Null
+& $Py -m pip --no-cache-dir install --upgrade pip | Out-Null
 $Extras = @()
 if (-not $NoApp) { $Extras += "desktop" }
 if ($Transcribe) { $Extras += "transcribe" }
 $Extra = if ($Extras) { "[" + ($Extras -join ",") + "]" } else { "" }
-& $Py -m pip install "$Repo$Extra"
+& $Py -m pip --no-cache-dir install "$Repo$Extra"
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 $Config = Join-Path $Root "config.toml"
@@ -96,7 +99,7 @@ if (-not $NoApp) {
   try {
     if (-not (Test-Path (Join-Path $BuildVenv "Scripts\python.exe"))) { & $Py -m venv $BuildVenv }
     $BPy = Join-Path $BuildVenv "Scripts\python.exe"
-    & $BPy -m pip install --upgrade pip pyinstaller | Out-Null
+    & $BPy -m pip --no-cache-dir install --upgrade pip pyinstaller | Out-Null
     & $BPy -m PyInstaller --noconfirm --onefile --windowed --name Ultron --icon $Ico `
       --distpath $Root --workpath $Work --specpath $Work (Join-Path $Repo "scripts\launcher.py") | Out-Null
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $Exe)) { throw "PyInstaller exited $LASTEXITCODE" }

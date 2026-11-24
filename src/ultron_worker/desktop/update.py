@@ -156,7 +156,28 @@ def pull(repo: Path, target_sha: str, *, branch: str = BRANCH) -> None:
         )
 
 
-def _run(cmd: list[str], log: Callable[[str], None], timeout: float) -> subprocess.CompletedProcess:
+def pip(py: str, *args: str) -> list[str]:
+    """``python -m pip`` that never touches a pip cache.
+
+    The per-user cache (%LocalAppData%\\pip\\cache) can hold files this user can't read (mixed
+    ownership/ACLs), and pip fails the install on them (Errno 13): an update must not depend on
+    it. Run with :func:`pip_env` so pip's own children (build isolation) skip it too.
+    """
+    return [py, "-m", "pip", "--no-cache-dir", *args]
+
+
+def pip_env() -> dict[str, str]:
+    env = winenv.child_env()
+    env["PIP_NO_CACHE_DIR"] = "1"
+    return env
+
+
+def _run(
+    cmd: list[str],
+    log: Callable[[str], None],
+    timeout: float,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     log("$ " + " ".join(cmd))
     try:
         proc = subprocess.run(
@@ -167,6 +188,7 @@ def _run(cmd: list[str], log: Callable[[str], None], timeout: float) -> subproce
             errors="replace",
             timeout=timeout,
             stdin=subprocess.DEVNULL,
+            env=env,
             creationflags=NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -200,9 +222,10 @@ def prepare(
         raise UpdateError("could not create the new venv")
     py = str(venv_python(venv))
     try:
-        _run([py, "-m", "pip", "install", "--upgrade", "pip"], log, 600)
+        env = pip_env()
+        _run(pip(py, "install", "--upgrade", "pip"), log, 600, env)
         spec = f"{repo}[{','.join(install.extras)}]" if install.extras else str(repo)
-        if _run([py, "-m", "pip", "install", spec], log, 1800).returncode != 0:
+        if _run(pip(py, "install", spec), log, 1800, env).returncode != 0:
             raise UpdateError("pip install failed (see the update log)")
         log("running --check with the new version")
         proc = _run([*install.runner_command(venv), "--check"], log, check_timeout)
