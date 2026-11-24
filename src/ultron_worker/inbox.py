@@ -450,14 +450,19 @@ class InboxWatcher:
         return top[0], ""
 
     def _dest_rel(self, rec: dict[str, Any], subject: str) -> str:
+        """``<subject>/<date>/<name>``, else a free or same-content variant: never another
+        file's name."""
         parts = rec["rel"].split("/")
         date = next((p for p in parts[2:-1] if DATE.fullmatch(p)), rec["arrived_at"][:10])
-        rel = f"{subject}/{date}/{parts[-1]}"
-        dest = self._abs(rel)
-        if dest.exists() and sha256(dest) != rec["hash"]:
-            p = Path(parts[-1])
-            rel = f"{subject}/{date}/{p.stem}-{rec['hash'][:8]}{p.suffix}"
-        return rel
+        p = Path(parts[-1])
+        names = [p.name, f"{p.stem}-{rec['hash'][:8]}{p.suffix}"]
+        names += [f"{p.stem}-{rec['hash'][:8]}-{n}{p.suffix}" for n in range(2, 100)]
+        for name in names:
+            rel = f"{subject}/{date}/{name}"
+            dest = self._abs(rel)
+            if not dest.exists() or sha256(dest) == rec["hash"]:
+                return rel
+        raise InboxError(f"no free name for {rec['rel']} in {subject}/{date}")
 
     def file(self, h: str, subject: str) -> None:
         rec = self.db.item(h) or {}
@@ -470,7 +475,11 @@ class InboxWatcher:
         rec = self.db.item(h) or {}
         src, dest = self._abs(rec["rel"]), self._abs(rec["dest"])
         if src.exists():
-            if not (dest.exists() and sha256(dest) == h):
+            if dest.exists() and sha256(dest) != h:
+                # taken since the name was chosen: choose again next pass
+                self.db.update(h, status="waiting", dest=None)
+                raise InboxError(f"{rec['dest']} is taken by other media; not overwritten")
+            if not dest.exists():
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     os.replace(src, dest)  # same share: atomic
