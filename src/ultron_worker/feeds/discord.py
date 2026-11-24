@@ -9,6 +9,7 @@ and the attachments' CDN URLs (fetched without the token).
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import threading
 from collections.abc import Mapping
@@ -17,6 +18,7 @@ from typing import Any
 
 from .. import __version__
 from ..config import DiscordFeedConfig
+from ..jobs.vision import IMAGE_EXTS
 from .base import (
     AuthRejected,
     FeedError,
@@ -25,16 +27,15 @@ from .base import (
     ReadOnlyHttp,
     iso_ts,
     land,
+    media_name,
     today,
 )
 
+log = logging.getLogger(__name__)
 API = "https://discord.com/api/v10"
 TOKEN_ENV = "ULTRON_DISCORD_TOKEN"
 THREAD_TYPES = frozenset({10, 11, 12})  # announcement, public and private threads
 PAGE = 100
-IMAGE_EXTS = frozenset(
-    {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".tif", ".tiff"}
-)
 UA = f"DiscordBot (https://github.com/realworlddigital/ultron-worker, {__version__})"
 
 
@@ -136,6 +137,10 @@ class DiscordFeed:
             url = str(att.get("url") or "")
             if not aid or not url or not is_image(att):
                 continue
+            name = media_name(str(att.get("filename") or aid), att.get("content_type"))
+            if name is None:
+                log.info("discord: skipping attachment %s: not an image the watcher ingests", aid)
+                continue
             if state.known(self.feeder_id, aid, "1"):
                 continue  # landed before the cursor moved (a pull cut short mid-message)
             manifest = {
@@ -156,7 +161,7 @@ class DiscordFeed:
             target, size = land(
                 source_dir,
                 today(),
-                str(att.get("filename") or f"{aid}.png"),
+                name,
                 aid,
                 lambda tmp, u=url: self.http.download(u, {"User-Agent": UA}, tmp, stop),
                 iso_ts(str(msg.get("timestamp") or "")),

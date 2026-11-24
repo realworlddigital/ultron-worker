@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import http.client
 import json
+import mimetypes
 import os
 import re
 import sqlite3
@@ -21,7 +22,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..jobs.vision import IMAGE_EXTS, VIDEO_EXTS
+
 MANIFEST = "manifest.jsonl"
+WATCHED_EXTS = frozenset(IMAGE_EXTS | VIDEO_EXTS)  # what the inbox watcher ingests
 CHUNK = 1 << 20
 UNSAFE = re.compile(r"[^A-Za-z0-9._ ()-]+")
 MAX_NAME = 120
@@ -115,6 +119,7 @@ class ReadOnlyHttp:
             self._open(urllib.request.Request(url, headers=headers)) as resp,
             open(dest, "wb") as out,
         ):
+            length = resp.headers.get("Content-Length")
             while chunk := resp.read(CHUNK):
                 if stop.is_set():
                     raise FeedUnavailable("stopping")
@@ -233,6 +238,17 @@ def safe_name(name: str) -> str:
     ext = ext[:10]
     keep = MAX_NAME - len(ext) - 1
     return f"{stem[:keep]}.{ext}" if ext else base[:MAX_NAME]
+
+
+def media_name(name: str, mime: str | None) -> str | None:
+    """The landing name, with an extension the inbox watcher ingests (taken from the MIME type
+    when the source name has none), or None when the watcher could not ingest the file."""
+    base = safe_name(name)
+    if os.path.splitext(base)[1].lower() in WATCHED_EXTS:
+        return base
+    guess = (mimetypes.guess_extension(mime or "", strict=False) or "").lower()
+    guess = {".jpe": ".jpg", ".jpeg": ".jpg"}.get(guess, guess)
+    return f"{base}{guess}" if guess in WATCHED_EXTS else None
 
 
 def _free(day_dir: Path, name: str, source_id: str) -> Path:

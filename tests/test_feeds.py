@@ -20,7 +20,17 @@ from ultron_worker.config import (
     load,
 )
 from ultron_worker.feeds import DiscordFeed, DriveFeed, FeedRunner
-from ultron_worker.feeds.base import FeedError, FeedState, ReadOnlyHttp, _SameHostAuth, safe_name
+from ultron_worker.feeds.base import (
+    FeedError,
+    FeedState,
+    FeedUnavailable,
+    HttpError,
+    ReadOnlyHttp,
+    _SameHostAuth,
+    land,
+    media_name,
+    safe_name,
+)
 from ultron_worker.feeds.base import today as base_today
 from ultron_worker.inbox import InboxWatcher
 
@@ -64,6 +74,8 @@ class FakeHttp:
 
     def download(self, url: str, headers: dict, dest: Path, stop: threading.Event) -> int:
         self.calls.append(("DOWNLOAD", url, headers))
+        if isinstance(self.blobs[url], Exception):
+            raise self.blobs[url]
         data = self.blobs[url]
         dest.write_bytes(data)
         return len(data)
@@ -458,3 +470,82 @@ def test_runner_starts_the_feeders_beside_the_watcher(feed_cfg, make):
 def test_runner_without_api_feeders_has_no_feed_thread(cfg, make):
     runner, _, _ = make()
     assert runner.feeds is None
+
+
+# ---- review fixes -----------------------------------------------------------------------------
+def media_url(fid: str) -> str:
+    return f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media&supportsAllDrives=true"
+
+
+def test_a_short_download_is_a_failed_pull(tmp_path, monkeypatch):
+    class Resp:
+        headers = {"Content-Length": "10"}
+
+        def __init__(self):
+            self.parts = [b"12345", b""]
+
+        def read(self, n):
+            return self.parts.pop(0)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    http = ReadOnlyHttp()
+    monkeypatch.setattr(http._opener, "open", lambda req, timeout: Resp())
+    with pytest.raises(FeedUnavailable, match="short download"):
+        http.download("https://cdn.discordapp.com/a.png", {}, tmp_path / "a", threading.Event())
+    Resp.headers = {"Content-Length": "5"}
+    assert (
+        http.download("https://cdn.discordapp.com/a.png", {}, tmp_path / "b", threading.Event())
+        == 5
+    )
+
+
+def test_land_refuses_a_linked_day_folder_or_manifest(tmp_path):
+    src, outside = tmp_path / "inbox/gdrive", tmp_path / "outside"
+    src.mkdir(parents=True)
+    outside.mkdir()
+    (src / "2026-11-23").symlink_to(outside, target_is_directory=True)
+    fetch = lambda p: p.write_bytes(PNG) or len(PNG)  # noqa: E731
+    with pytest.raises(FeedError, match="refusing"):
+        land(src, "2026-11-23", "a.png", "f1", fetch, None, {})
+    (src / "2026-11-24").mkdir()
+    (src / "2026-11-24/manifest.jsonl").symlink_to(outside / "m.jsonl")
+    with pytest.raises(FeedError, match="refusing"):
+        land(src, "2026-11-24", "a.png", "f1", fetch, None, {})
+    assert list(outside.iterdir()) == []
+
+
+def test_drive_skips_a_file_the_sign_in_cannot_download(feed_cfg, nas):
+    runner, w, bb, http = setup(feed_cfg)
+    http.files = [
+        drive_file("f1", "locked.jpg", "image/jpeg", "2026-11-23T10:00:00.000Z"),
+        {**drive_file("f2", "nodl.jpg", "image/jpeg", "2026-11-23T10:30:00.000Z"),
+         "capabilities": {"canDownload": False}},
+        drive_file("f3", "open.jpg", "image/jpeg", "2026-11-23T11:00:00.000Z"),
+    ]  # fmt: skip
+    http.blobs[media_url("f1")] = HttpError(403, '{"reason": "cannotDownloadFile"}')
+    http.blobs[media_url("f3")] = PNG
+    report = runner.pull("gdrive")
+    assert report["ok"] and report["items"] == 1
+    assert media_url("f2") not in http.downloads()
+    http.blobs[media_url("f1")] = HttpError(403, '{"reason": "rateLimitExceeded"}')
+    http.files[0]["modifiedTime"] = "2026-11-23T12:00:00.000Z"
+    assert not runner.pull("gdrive")["ok"]  # a real 403 still fails the pull
+
+
+def test_landing_names_are_ones_the_watcher_ingests(feed_cfg, nas):
+    assert media_name("IMG_0001", "image/jpeg") == "IMG_0001.jpg"
+    assert media_name("clip", "video/mp4") == "clip.mp4"
+    assert media_name("pic.heic", "image/heic") is None
+    assert media_name("a.PNG", None) == "a.PNG"
+    runner, w, bb, http = setup(feed_cfg)
+    http.messages = [msg(7, ("photo.heic", "image/heic"), ("noext", "image/png"))]
+    for a in http.messages[0]["attachments"]:
+        http.blobs[a["url"]] = PNG
+    assert runner.pull("discord")["items"] == 1
+    assert [p.name for p in (nas / "inbox/discord" / base_today()).glob("*.png")] == ["noext.png"]
+    assert not any("heic" in u for u in http.downloads())
