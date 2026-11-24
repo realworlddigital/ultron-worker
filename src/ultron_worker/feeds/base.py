@@ -120,6 +120,8 @@ class ReadOnlyHttp:
                     raise FeedUnavailable("stopping")
                 out.write(chunk)
                 size += len(chunk)
+        if length is not None and length.isdigit() and int(length) != size:
+            raise FeedUnavailable(f"short download: {size} of {length} bytes")
         return size
 
     def token(self, url: str, form: dict[str, str]) -> dict[str, Any]:
