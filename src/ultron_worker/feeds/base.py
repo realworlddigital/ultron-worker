@@ -25,6 +25,21 @@ from typing import Any
 from ..jobs.vision import IMAGE_EXTS, VIDEO_EXTS
 
 MANIFEST = "manifest.jsonl"
+MIME_EXTS = {  # the watched types, independent of the host's MIME table
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/x-m4v": ".m4v",
+    "video/x-matroska": ".mkv",
+    "video/x-msvideo": ".avi",
+    "video/webm": ".webm",
+    "video/x-ms-wmv": ".wmv",
+    "video/mp2t": ".mts",
+}
 WATCHED_EXTS = frozenset(IMAGE_EXTS | VIDEO_EXTS)  # what the inbox watcher ingests
 CHUNK = 1 << 20
 UNSAFE = re.compile(r"[^A-Za-z0-9._ ()-]+")
@@ -246,8 +261,8 @@ def media_name(name: str, mime: str | None) -> str | None:
     base = safe_name(name)
     if os.path.splitext(base)[1].lower() in WATCHED_EXTS:
         return base
-    guess = (mimetypes.guess_extension(mime or "", strict=False) or "").lower()
-    guess = {".jpe": ".jpg", ".jpeg": ".jpg"}.get(guess, guess)
+    mime = (mime or "").split(";")[0].strip().lower()
+    guess = MIME_EXTS.get(mime) or (mimetypes.guess_extension(mime, strict=False) or "").lower()
     return f"{base}{guess}" if guess in WATCHED_EXTS else None
 
 

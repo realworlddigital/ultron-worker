@@ -537,10 +537,14 @@ def test_drive_skips_a_file_the_sign_in_cannot_download(feed_cfg, nas):
     assert not runner.pull("gdrive")["ok"]  # a real 403 still fails the pull
 
 
-def test_landing_names_are_ones_the_watcher_ingests(feed_cfg, nas):
+def test_landing_names_are_ones_the_watcher_ingests(feed_cfg, nas, monkeypatch):
     assert media_name("IMG_0001", "image/jpeg") == "IMG_0001.jpg"
     assert media_name("clip", "video/mp4") == "clip.mp4"
     assert media_name("pic.heic", "image/heic") is None
+    monkeypatch.setattr("mimetypes.guess_extension", lambda *a, **k: None)
+    assert media_name("IMG_2", "image/jpeg; charset=binary") == "IMG_2.jpg"
+    assert media_name("mov", "video/quicktime") == "mov.mov"
+    monkeypatch.undo()
     assert media_name("a.PNG", None) == "a.PNG"
     runner, w, bb, http = setup(feed_cfg)
     http.messages = [msg(7, ("photo.heic", "image/heic"), ("noext", "image/png"))]
