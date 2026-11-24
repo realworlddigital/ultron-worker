@@ -128,6 +128,21 @@ class InboxDB:
         with self._lock:
             return list(self._db.execute(sql, args))
 
+    @contextlib.contextmanager
+    def tx(self) -> Iterator[None]:
+        """One atomic step: a state change and the outbox row that reports it."""
+        with self._lock:
+            if self._db.in_transaction:
+                yield
+                return
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            self._db.execute("COMMIT")
+
     def item(self, h: str) -> dict[str, Any] | None:
         rows = self.q("SELECT * FROM items WHERE hash=?", h)
         return dict(rows[0]) if rows else None
@@ -346,15 +361,16 @@ class InboxWatcher:
         media = "video" if path.suffix.lower() in VIDEO_EXTS else "image"
         if rec is None:
             # new bytes at a path a pending item held: that item was replaced, not this one
-            self.db.q("UPDATE items SET status='missing' WHERE rel=? AND hash!=? AND status IN"
-                      " ('waiting', 'review')", rel, h)  # fmt: skip
-            self.db.q(
-                "INSERT INTO items(hash, feeder, rel, media, bytes, src_mtime, arrived_at, status)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting')",
-                h, feeder.feeder_id, rel, media, st.st_size, st.st_mtime, utc_iso(),
-            )  # fmt: skip
+            with self.db.tx():
+                self.db.q("UPDATE items SET status='missing' WHERE rel=? AND hash!=? AND status"
+                          " IN ('waiting', 'review')", rel, h)  # fmt: skip
+                self.db.q(
+                    "INSERT INTO items(hash, feeder, rel, media, bytes, src_mtime, arrived_at,"
+                    " status) VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting')",
+                    h, feeder.feeder_id, rel, media, st.st_size, st.st_mtime, utc_iso(),
+                )  # fmt: skip
+                self.report_item(h)
             res.new[feeder.feeder_id] += 1
-            self.report_item(h)
             return True
         if rec["rel"] == rel:
             if rec["status"] != "missing":
@@ -366,8 +382,9 @@ class InboxWatcher:
         )
         if moved:  # the same bytes moved within the inbox: the record follows them
             status = "review" if rec["tags"] or rec["reason"] else "waiting"
-            self.db.update(h, rel=rel, feeder=feeder.feeder_id, status=status)
-            self.report_item(h)
+            with self.db.tx():
+                self.db.update(h, rel=rel, feeder=feeder.feeder_id, status=status)
+                self.report_item(h)
             return True
         dupes = json.loads(rec["dupes"])
         if all(d["path"] != rel for d in dupes):
@@ -414,8 +431,10 @@ class InboxWatcher:
             except ItemFailed as exc:  # ItemRetry too: an unusable reply after a re-ask
                 tries = rec["attempts"] + 1
                 if tries >= self.box.review_after_attempts:
-                    self.db.update(rec["hash"], attempts=tries, status="review",
-                                   reason=f"tags could not be inferred: {exc}")  # fmt: skip
+                    with self.db.tx():
+                        self.db.update(rec["hash"], attempts=tries, status="review",
+                                       reason=f"tags could not be inferred: {exc}")  # fmt: skip
+                        self.report_item(rec["hash"])
                     res.review += 1
                 else:
                     self.db.update(rec["hash"], attempts=tries, reason=None)
@@ -427,9 +446,10 @@ class InboxWatcher:
             res.tagged += 1
             subject, why = self.subject(tags)
             if subject is None:
-                self.db.update(rec["hash"], status="review", reason=why)
+                with self.db.tx():
+                    self.db.update(rec["hash"], status="review", reason=why)
+                    self.report_item(rec["hash"])
                 res.review += 1
-                self.report_item(rec["hash"])
                 continue
             self.file(rec["hash"], subject)
             res.filed += 1
@@ -495,9 +515,10 @@ class InboxWatcher:
         elif not dest.exists():
             self.db.update(h, status="missing")
             return
-        self.db.q("DELETE FROM seen WHERE rel=?", rec["rel"])
-        self.db.update(h, status="filed", rel=rec["dest"], reason=None)
-        self.report_item(h)
+        with self.db.tx():
+            self.db.q("DELETE FROM seen WHERE rel=?", rec["rel"])
+            self.db.update(h, status="filed", rel=rec["dest"], reason=None)
+            self.report_item(h)
 
     def reconcile(self) -> bool:
         rows = self.db.q("SELECT hash FROM items WHERE status='filing'")
