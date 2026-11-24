@@ -33,7 +33,7 @@ import sqlite3
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -57,13 +57,15 @@ HASH_CHUNK = 1 << 20
 PENDING = ("waiting", "review")  # still in the inbox: what the heartbeat counts
 PULL_404_TRIES = 5  # a pull report may race its feeder's registration; then it is refused
 
-# API feeders' pullers, by feeder id: ``fn(source_dir) -> files pulled``. Registered by a
-# module listed in runner.job_modules; a native feeder never has one (the NAS syncs it).
-PULLERS: dict[str, Callable[[Path], int]] = {}
+# API feeders' pullers, by feeder id: ``fn(source_dir) -> files pulled``, or a mapping with
+# ``items`` plus the pull report's ``items_24h`` / ``items_total`` / ``pulled_at``. Registered by
+# a module listed in runner.job_modules (or ``InboxWatcher.pullers`` for the built-in feeders in
+# :mod:`.feeds`); a native feeder never has one (the NAS syncs it).
+PULLERS: dict[str, Callable[[Path], Any]] = {}
 
 
-def register_puller(feeder_id: str) -> Callable[[Callable[[Path], int]], Callable[[Path], int]]:
-    def deco(fn: Callable[[Path], int]) -> Callable[[Path], int]:
+def register_puller(feeder_id: str) -> Callable[[Callable[[Path], Any]], Callable[[Path], Any]]:
+    def deco(fn: Callable[[Path], Any]) -> Callable[[Path], Any]:
         PULLERS[feeder_id] = fn
         return fn
 
@@ -218,6 +220,7 @@ class InboxWatcher:
         self.feeders: dict[str, Feeder] = {f.feeder_id: f for f in self.box.feeders}
         self._by_folder = {f.folder.casefold(): f for f in self.box.feeders}
         self._registered: set[str] = set()
+        self.pullers: dict[str, Callable[[Path], Any]] = {}
         self.rescan = threading.Event()
         self.last: dict[str, Any] = {}
         self.last_counts: dict[str, int] = {}
@@ -719,16 +722,22 @@ class InboxWatcher:
         sync re-scans now (the NAS syncs it on its own schedule: no pull is claimed)."""
         pulled: int | None = None
         if feeder.kind == "api":
-            puller = PULLERS.get(feeder.feeder_id)
+            puller = self.pullers.get(feeder.feeder_id) or PULLERS.get(feeder.feeder_id)
             if puller is None:
                 return False, None, f"no puller for api feeder {feeder.feeder_id} on this runner"
+            report: dict[str, Any] = {"ok": True, "pulled_at": utc_iso()}
             try:
-                pulled = int(puller(self._abs(f"{self.box.inbox}/{feeder.folder}")))
+                got = puller(self._abs(f"{self.box.inbox}/{feeder.folder}"))
+                if isinstance(got, Mapping):
+                    pulled = int(got["items"])
+                    stats = ("pulled_at", "items_24h", "items_total")
+                    report.update({k: got[k] for k in stats if got.get(k) is not None})
+                else:
+                    pulled = int(got)
             except Exception as exc:  # a puller is plug-in code: its failure is the outcome
                 report = {"ok": False, "pulled_at": utc_iso(), "error": str(exc)[:500]}
                 self.db.put(f"pull:{feeder.feeder_id}", "media_pull", feeder.feeder_id, report)
                 return False, None, f"pull failed: {exc}"
-            report = {"ok": True, "pulled_at": utc_iso()}
             self.db.put(f"pull:{feeder.feeder_id}", "media_pull", feeder.feeder_id, report)
         res = self.run_pass(f"sync {feeder.feeder_id}")
         items = pulled if pulled is not None else res.new[feeder.feeder_id]

@@ -43,6 +43,7 @@ class FakeBackbone(Backbone):
         self._seq = itertools.count(1)
         self.media: dict[str, dict[str, Any]] = {}  # "<kind>:<id>" -> last body
         self.media_calls: list[tuple[str, str]] = []
+        self.paused: set[str] = set()
         self.syncs: dict[str, dict[str, Any]] = {}
 
     def add(
@@ -124,6 +125,13 @@ class FakeBackbone(Backbone):
 
     def _media(self, method: str, parts: list[str], params: Any, body: dict[str, Any]) -> Any:
         kind = parts[0]
+        if kind == "inbox" and method == "GET":
+            feeders = [
+                {"data": {"feeder_id": k.split(":", 1)[1], **v,
+                          "status": "paused" if k.split(":", 1)[1] in self.paused else "connected"}}
+                for k, v in self.media.items() if k.startswith("feeders:")
+            ]  # fmt: skip
+            return {"feeders": feeders, "status": None, "items": []}
         if kind == "sync" and method == "GET":
             status = (params or {})["status"]
             return {"items": [c for c in self.syncs.values() if c["status"] == status]}

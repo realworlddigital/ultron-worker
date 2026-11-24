@@ -7,12 +7,14 @@ or rotates a credential.
 
 from __future__ import annotations
 
+import dataclasses
 import ipaddress
 import os
 import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from .media import MediaRoots
@@ -79,6 +81,39 @@ class InboxConfig:
     subjects: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
+DISCORD_ID = re.compile(r"^\d{15,25}$")  # a Discord snowflake
+DRIVE_ID = re.compile(r"^[A-Za-z0-9_-]{10,100}$")  # a Drive folder id (safe inside a query)
+
+
+@dataclass(frozen=True)
+class DiscordFeedConfig:
+    """``[media_feeders.discord]``: one Guild Hall thread -> ``<inbox>/<folder>/<date>/``. The
+    bot token is David's: ``ULTRON_DISCORD_TOKEN`` or ``token_file``, read at pull time only."""
+
+    enabled: bool = False
+    feeder_id: str = "discord"
+    display_name: str = "Discord"
+    folder: str = "discord"
+    guild_id: str = ""
+    thread_id: str = ""
+    token_file: str = ""
+    interval_seconds: float = 300.0
+
+
+@dataclass(frozen=True)
+class DriveFeedConfig:
+    """``[media_feeders.gdrive]``: one Drive folder -> ``<inbox>/<folder>/<date>/``. Auth is
+    David's stored Google sign-in (``auth_file``, an authorized-user JSON), read at pull time."""
+
+    enabled: bool = False
+    feeder_id: str = "gdrive"
+    display_name: str = "Google Drive"
+    folder: str = "gdrive"
+    folder_id: str = ""
+    auth_file: str = ""
+    interval_seconds: float = 300.0
+
+
 @dataclass(frozen=True)
 class Config:
     backbone_url: str
@@ -101,6 +136,11 @@ class Config:
     sleep_gap_seconds: float = 90.0
     host_name: str = field(default_factory=lambda: os.environ.get("COMPUTERNAME", "ultron"))
     media_inbox: InboxConfig = field(default_factory=InboxConfig)
+    discord_feed: DiscordFeedConfig = field(default_factory=DiscordFeedConfig)
+    drive_feed: DriveFeedConfig = field(default_factory=DriveFeedConfig)
+
+    def api_feeds(self) -> tuple[DiscordFeedConfig | DriveFeedConfig, ...]:
+        return tuple(f for f in (self.discord_feed, self.drive_feed) if f.enabled)
 
     def __post_init__(self) -> None:
         validate(self)
@@ -134,6 +174,61 @@ def validate(cfg: Config) -> None:
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
     _validate_inbox(cfg.media_inbox, roots)
+    _validate_feeds(cfg)
+
+
+def _validate_feeds(cfg: Config) -> None:
+    """Identity values (thread, folder) may still be blank: the feeder then reports 'not
+    configured' to the registry. Only a shape that can never work is a config error."""
+    for feed in cfg.api_feeds():
+        name = f"media_feeders.{feed.feeder_id}"
+        if not cfg.media_inbox.enabled:
+            raise ConfigError(f"{name} needs [media_inbox] enabled: it lands files in the inbox")
+        listed = {f.feeder_id: f for f in cfg.media_inbox.feeders}.get(feed.feeder_id)
+        if listed is None or listed.kind != "api" or listed.folder != feed.folder:
+            raise ConfigError(f"{name}: media_inbox.feeders.{feed.feeder_id} must be an api "
+                              f"feeder on folder {feed.folder!r}")  # fmt: skip
+        if feed.interval_seconds < 30:
+            raise ConfigError(f"{name}.interval_seconds must be at least 30")
+    d = cfg.discord_feed
+    for key in ("guild_id", "thread_id"):
+        value = getattr(d, key)
+        if d.enabled and value and not DISCORD_ID.fullmatch(value):
+            raise ConfigError(f"media_feeders.discord.{key} must be a numeric Discord id")
+    g = cfg.drive_feed
+    if g.enabled and g.folder_id and not DRIVE_ID.fullmatch(g.folder_id):
+        raise ConfigError("media_feeders.gdrive.folder_id must be a Drive folder id")
+
+
+def _feeds(raw: Any, box: InboxConfig) -> tuple[DiscordFeedConfig, DriveFeedConfig, InboxConfig]:
+    """``[media_feeders.*]``, and the inbox feeder each enabled one implies (kind api)."""
+    if not isinstance(raw, dict):
+        raise ConfigError("[media_feeders] must be a table")
+    out: list[Any] = []
+    for cls, key, text in (
+        (DiscordFeedConfig, "discord", ("guild_id", "thread_id", "token_file")),
+        (DriveFeedConfig, "gdrive", ("folder_id", "auth_file")),
+    ):
+        spec = raw.get(key) or {}
+        if not isinstance(spec, dict):
+            raise ConfigError(f"media_feeders.{key} must be a table")
+        d = cls()
+        values: dict[str, Any] = {
+            "enabled": bool(spec.get("enabled", False)),
+            "display_name": str(spec.get("display_name") or d.display_name)[:80],
+            "folder": str(spec.get("folder") or d.folder).strip("/"),
+            "interval_seconds": float(spec.get("interval_seconds", d.interval_seconds)),
+        }
+        for k in text:
+            v = str(spec.get(k) or "").strip()
+            values[k] = _expand(v) if k.endswith("_file") and v else v
+        out.append(cls(**values))
+    discord, drive = out
+    feeders = list(box.feeders)
+    for feed in (discord, drive):
+        if feed.enabled and all(f.feeder_id != feed.feeder_id for f in feeders):
+            feeders.append(Feeder(feed.feeder_id, "api", feed.folder, feed.display_name))
+    return discord, drive, dataclasses.replace(box, feeders=tuple(feeders))
 
 
 def _validate_inbox(box: InboxConfig, roots: MediaRoots) -> None:
@@ -230,6 +325,7 @@ def load(path: str | os.PathLike[str]) -> Config:
         backbone_url = str(bb["url"]).rstrip("/")
     except KeyError as exc:
         raise ConfigError("backbone.url is required") from exc
+    discord, drive, box = _feeds(raw.get("media_feeders", {}), _inbox(raw.get("media_inbox", {})))
     return Config(
         backbone_url=backbone_url,
         key=_read_key(bb),
@@ -248,5 +344,7 @@ def load(path: str | os.PathLike[str]) -> Config:
         gui_enabled=bool(gui.get("enabled", True)),
         gui_port=int(gui.get("port", 8765)),
         gui_host=str(gui.get("host", "127.0.0.1")),
-        media_inbox=_inbox(raw.get("media_inbox", {})),
+        media_inbox=box,
+        discord_feed=discord,
+        drive_feed=drive,
     )
