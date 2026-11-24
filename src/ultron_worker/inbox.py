@@ -287,6 +287,8 @@ class InboxWatcher:
                 d for d in dirnames if d.casefold() not in SYSTEM_DIRS and not d.startswith(".")
             )
             for name in sorted(filenames):
+                if (Path(dirpath) / name).is_symlink():
+                    continue  # never follow a link out of the allowed roots
                 low = name.casefold()
                 if name.startswith((".", "~$")) or low.endswith(TEMP_SUFFIXES):
                     continue
@@ -296,7 +298,8 @@ class InboxWatcher:
     def inventory(self, base: Path, res: PassResult) -> bool:
         now, present, dirty = time.time(), set(), False
         for src in sorted(base.iterdir(), key=lambda p: p.name):
-            if not src.is_dir() or src.name.casefold() in SYSTEM_DIRS or src.name[:1] in "._":
+            skip = src.is_symlink() or src.name.casefold() in SYSTEM_DIRS or src.name[:1] in "._"
+            if skip or not src.is_dir():
                 continue
             feeder = self.feeder_for(src.name)
             if feeder is None:
