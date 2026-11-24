@@ -25,6 +25,8 @@ TIMEOUT = 30.0  # reads (the poll loop)
 # per call, and the caller decides whether to queue, defer or drop.
 WRITE_TIMEOUT = 10.0
 TASK_ID = r"[A-Za-z0-9_\-]+"
+FEEDER = r"[a-z0-9][a-z0-9-]{0,47}"
+MEDIA_ITEM = r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}"
 # (method, path pattern): the runner's whole API surface.
 ALLOWED = (
     ("GET", re.compile(r"/me")),
@@ -34,6 +36,14 @@ ALLOWED = (
     ("POST", re.compile(rf"/tasks/{TASK_ID}/notes")),
     ("POST", re.compile(r"/events")),
     ("PUT", re.compile(r"/system/status/[A-Za-z0-9_\-]+")),
+    # The NAS media inbox (apollo-backbone docs/media-inbox.md): the worker half only. Pause,
+    # Resume, Sync now and File/Discard are David's and Apollo's, never the runner's.
+    ("PUT", re.compile(rf"/media/feeders/{FEEDER}")),
+    ("POST", re.compile(rf"/media/feeders/{FEEDER}/pull")),
+    ("PUT", re.compile(rf"/media/ingest/{FEEDER}")),
+    ("PUT", re.compile(rf"/media/items/{MEDIA_ITEM}")),
+    ("GET", re.compile(r"/media/sync")),
+    ("POST", re.compile(rf"/media/sync/{TASK_ID}/(ack|finish)")),
 )
 
 
@@ -87,6 +97,11 @@ class Backbone:
             raise ScopeViolation(f"{path}: not a card routed to {EXECUTOR}")
         if path.startswith("/system/status/") and path != f"/system/status/{self.actor}":
             raise ScopeViolation("the runner writes only its own status")
+        feeder_put = path.startswith("/media/feeders/") and method == "PUT"
+        if feeder_put and (body or {}).get("worker") != self.actor:
+            raise ScopeViolation("the runner registers only feeders it works itself")
+        if path == "/media/sync" and (params or {}).get("status") not in ("pending", "acked"):
+            raise ScopeViolation("sync polls name status pending or acked")
         if (method, path) == ("POST", "/events"):
             body = body or {}
             target = body.get("target") or {}
@@ -206,3 +221,28 @@ class Backbone:
             f"/system/status/{self.actor}",
             body={"ok": ok, "state": state, "detail": detail, "host": host},
         )
+
+    # ---- media inbox (worker half) ---------------------------------------------
+    def media_feeder(self, feeder_id: str, definition: dict[str, Any]) -> Any:
+        return self.request("PUT", f"/media/feeders/{feeder_id}", body=definition)
+
+    def media_pull(self, feeder_id: str, report: dict[str, Any]) -> Any:
+        return self.request("POST", f"/media/feeders/{feeder_id}/pull", body=report)
+
+    def media_heartbeat(self, watcher: str, body: dict[str, Any]) -> Any:
+        return self.request("PUT", f"/media/ingest/{watcher}", body=body)
+
+    def media_item(self, item_id: str, body: dict[str, Any]) -> Any:
+        return self.request("PUT", f"/media/items/{item_id}", body=body)
+
+    def media_syncs(self, status: str = "pending") -> list[dict[str, Any]]:
+        return list(self.request("GET", "/media/sync", params={"status": status}).get("items", []))
+
+    def media_sync_ack(self, cmd_id: str) -> Any:
+        return self.request("POST", f"/media/sync/{cmd_id}/ack", body={})
+
+    def media_sync_finish(
+        self, cmd_id: str, *, ok: bool, items: int | None, error: str | None
+    ) -> Any:
+        body = {"ok": ok, "items": items, "error": error[:500] if error else None}
+        return self.request("POST", f"/media/sync/{cmd_id}/finish", body=body)

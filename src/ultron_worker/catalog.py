@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -75,6 +76,10 @@ def _toc_key(roots: MediaRoots, entry: dict[str, Any]) -> tuple[str, str]:
     return roots.identity({"root": entry.get("root"), "relpath": entry.get("folder")})
 
 
+# The TOC is read-modify-write: a card job and the inbox watcher share one updater at a time.
+_CATALOG_LOCK = threading.Lock()
+
+
 def update_catalog(
     roots: MediaRoots,
     allowed: Callable[[str], Path],
@@ -87,6 +92,22 @@ def update_catalog(
     """Upsert this folder's TOC entry and rebuild ``all-tags.jsonl`` at the index's media root.
     Returns a short note for the completion summary. Never raises for catalog trouble: the
     folder index is already written, and the next completion rebuilds the catalog anyway."""
+    with _CATALOG_LOCK:
+        return _update_catalog(
+            roots, allowed, index_path=index_path, folder_path=folder_path, counts=counts,
+            model=model,
+        )  # fmt: skip
+
+
+def _update_catalog(
+    roots: MediaRoots,
+    allowed: Callable[[str], Path],
+    *,
+    index_path: Path,
+    folder_path: Path | None,
+    counts: dict[str, int],
+    model: str,
+) -> str:
     found = roots.relativize(index_path)
     if found is None:
         return "catalog not updated: the output is outside every media root"
