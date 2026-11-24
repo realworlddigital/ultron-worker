@@ -37,12 +37,17 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE TABLE IF NOT EXISTS items (
     task_id TEXT NOT NULL, key TEXT NOT NULL, result TEXT NOT NULL, done_at TEXT NOT NULL,
+    timing TEXT,  -- {phase: seconds} of the run that produced this result
     PRIMARY KEY (task_id, key)
 );
 """
 
 # Columns added after the first schema: a state DB from an older runner gets them on open.
-MIGRATIONS = (("spec", "TEXT"), ("report_step", "INTEGER NOT NULL DEFAULT 0"))
+MIGRATIONS = (
+    ("jobs", "spec", "TEXT"),
+    ("jobs", "report_step", "INTEGER NOT NULL DEFAULT 0"),
+    ("items", "timing", "TEXT"),
+)
 
 
 def now_iso() -> str:
@@ -59,10 +64,10 @@ class Store:
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA synchronous=FULL")
             self._db.executescript(SCHEMA)
-            have = {r["name"] for r in self._db.execute("PRAGMA table_info(jobs)")}
-            for column, decl in MIGRATIONS:
+            for table, column, decl in MIGRATIONS:
+                have = {r["name"] for r in self._db.execute(f"PRAGMA table_info({table})")}
                 if column not in have:
-                    self._db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {decl}")
+                    self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
@@ -175,15 +180,30 @@ class Store:
             ).fetchall()
         return {r["key"]: json.loads(r["result"]) for r in rows}
 
+    def item_timing(self, task_id: str, key: str) -> dict[str, float] | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT timing FROM items WHERE task_id=? AND key=?", (task_id, key)
+            ).fetchone()
+        return json.loads(row["timing"]) if row and row["timing"] else None
+
     def checkpoint(
-        self, task_id: str, key: str, result: Any, *, done: int, current_item: str | None
+        self,
+        task_id: str,
+        key: str,
+        result: Any,
+        *,
+        done: int,
+        current_item: str | None,
+        timing: dict[str, float] | None = None,
     ) -> None:
         """Commit one item's result and the job's progress in a single transaction."""
         ts = now_iso()
         with self._tx() as db:
             db.execute(
-                "INSERT OR REPLACE INTO items (task_id,key,result,done_at) VALUES (?,?,?,?)",
-                (task_id, key, json.dumps(result), ts),
+                "INSERT OR REPLACE INTO items (task_id,key,result,done_at,timing) "
+                "VALUES (?,?,?,?,?)",
+                (task_id, key, json.dumps(result), ts, json.dumps(timing) if timing else None),
             )
             db.execute(
                 "UPDATE jobs SET done=?, current_item=?, updated_at=? WHERE task_id=?",

@@ -226,7 +226,8 @@ class VisionTag(JobKind):
     def run_item(self, item: WorkItem, spec: JobSpec, ctx: JobContext) -> dict[str, Any]:
         path = Path(item.payload["path"])
         try:
-            stamp = file_stamp(path)  # before reading: a file changed mid-tag re-tags next time
+            with ctx.phase("stat"):
+                stamp = file_stamp(path)  # before reading: a changed file re-tags next time
         except OSError as exc:
             raise ItemFailed(f"unreadable file: {exc}") from exc
         max_tags = int(spec.params.get("max_tags", 25))
@@ -234,9 +235,12 @@ class VisionTag(JobKind):
         scratch = ctx.work_dir / SCRATCH_DIR / hashlib.sha1(item.key.encode()).hexdigest()[:16]
         try:
             if item.payload["media"] == "video":
-                images = self._frames(path, scratch, int(spec.params.get("video_frames", 4)))
+                with ctx.phase("frames"):
+                    n = int(spec.params.get("video_frames", 4))
+                    images = self._frames(path, scratch, n)
             else:
-                images = [self._image(path, scratch)]
+                with ctx.phase("image"):
+                    images = [self._image(path, scratch)]
             raw = self._ask(spec, ctx, prompt, images)
             try:
                 caption, tags = parse_tags(raw, max_tags)

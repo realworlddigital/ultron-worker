@@ -37,6 +37,7 @@ class FakeBackbone(Backbone):
         self.transitions: list[tuple[str, str]] = []
         self.statuses: list[dict[str, Any]] = []
         self.sent: list[tuple[str, str]] = []
+        self.timeouts: list[float] = []
         self.down = False
         self.me_actor = cfg.actor
         self._seq = itertools.count(1)
@@ -68,9 +69,16 @@ class FakeBackbone(Backbone):
         return task
 
     def _send(
-        self, method: str, path: str, params: dict[str, Any] | None, body: dict[str, Any] | None
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None,
+        body: dict[str, Any] | None,
+        *,
+        timeout: float = 30.0,
     ) -> Any:
         self.sent.append((method, path))
+        self.timeouts.append(timeout)
         if self.down:
             raise BackboneUnavailable("connection refused")
         if path == "/me":

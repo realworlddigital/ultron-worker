@@ -9,6 +9,7 @@ its own domain, only on ``task.local_job`` cards routed to ``local-ultron``, and
 from __future__ import annotations
 
 import contextlib
+import http.client
 import json
 import re
 import urllib.error
@@ -19,7 +20,10 @@ from typing import Any
 from .config import EVENT_PREFIX, EXECUTOR, FORBIDDEN_DOMAINS, TASK_TYPE, Config
 
 USER_AGENT = "ultron-worker/0.1"
-TIMEOUT = 30.0
+TIMEOUT = 30.0  # reads (the poll loop)
+# Writes (transitions, notes, events, heartbeat) give up fast: a dead tunnel costs at most this
+# per call, and the caller decides whether to queue, defer or drop.
+WRITE_TIMEOUT = 10.0
 TASK_ID = r"[A-Za-z0-9_\-]+"
 # (method, path pattern): the runner's whole API surface.
 ALLOWED = (
@@ -103,10 +107,18 @@ class Backbone:
         body: dict[str, Any] | None = None,
     ) -> Any:
         self._check(method, path, params, body)
-        return self._send(method, path, params, body)
+        return self._send(
+            method, path, params, body, timeout=TIMEOUT if method == "GET" else WRITE_TIMEOUT
+        )
 
     def _send(
-        self, method: str, path: str, params: dict[str, Any] | None, body: dict[str, Any] | None
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None,
+        body: dict[str, Any] | None,
+        *,
+        timeout: float = TIMEOUT,
     ) -> Any:
         url = self.base + path
         if params:
@@ -124,7 +136,7 @@ class Backbone:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:  # noqa: S310 (https only)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (https only)
                 raw = resp.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:500]
@@ -133,7 +145,13 @@ class Backbone:
             if exc.code >= 500 or exc.code == 429:
                 raise BackboneUnavailable(f"backbone {exc.code}: {detail}") from exc
             raise BackboneError(exc.code, detail) from exc
-        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            OSError,
+            http.client.HTTPException,  # e.g. IncompleteRead: the tunnel cut the response short
+        ) as exc:
             raise BackboneUnavailable(str(getattr(exc, "reason", exc))) from exc
         return json.loads(raw) if raw else {}
 

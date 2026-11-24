@@ -99,19 +99,20 @@ class Transcribe(JobKind):
         out_dir = ctx.allowed(spec.output, what="output target")
         model = self._model(spec, ctx)  # a model that won't load fails the job, not the item
         try:
-            segments, info = model.transcribe(
-                item.payload["path"],
-                language=spec.params.get("language"),
-                beam_size=int(spec.params.get("beam_size", 5)),
-                vad_filter=True,
-            )
-            segs = []
-            for s in segments:
-                if ctx.stop.is_set():
-                    raise JobStopped
-                segs.append(
-                    {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()}
+            with ctx.phase("model"):  # segments decode lazily: the loop is the model time
+                segments, info = model.transcribe(
+                    item.payload["path"],
+                    language=spec.params.get("language"),
+                    beam_size=int(spec.params.get("beam_size", 5)),
+                    vad_filter=True,
                 )
+                segs = []
+                for s in segments:
+                    if ctx.stop.is_set():
+                        raise JobStopped
+                    segs.append(
+                        {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()}
+                    )
         except (JobError, JobStopped, ItemFailed):
             raise
         except Exception as exc:  # noqa: BLE001 (decoder errors are this file's problem)
