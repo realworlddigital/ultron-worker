@@ -228,6 +228,19 @@ def test_interrupted_move_is_finished_on_the_next_pass(box_cfg, nas, monkeypatch
     assert not (nas / "inbox/phone/2026-11-23/kitty.png").exists()
 
 
+def test_stuck_move_does_not_block_the_scan(box_cfg, nas):
+    w, _, _ = watcher(box_cfg, busy=lambda: True)
+    w.run_pass()
+    h = w.db.q("SELECT hash FROM items WHERE rel LIKE '%/tree.png'")[0]["hash"]
+    (nas / "Subjects/Stuck/tree.png").mkdir(parents=True)  # unreadable as a file
+    (nas / "inbox/phone/2026-11-23/tree.png").unlink()
+    w.db.update(h, status="filing", dest="Subjects/Stuck/tree.png")
+    png(nas / "inbox/phone/2026-11-24/new.png", "N")
+    res = w.run_pass()
+    assert res.status == "ok" and res.new["phone"] == 1
+    assert w.db.item(h)["status"] == "filing"  # retried next pass, never dropped
+
+
 def test_native_sync_rescans_and_acks_without_claiming_a_pull(box_cfg, nas):
     w, bb, _ = watcher(box_cfg)
     w.run_pass()

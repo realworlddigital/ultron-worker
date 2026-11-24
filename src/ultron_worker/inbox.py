@@ -454,7 +454,11 @@ class InboxWatcher:
                     self.report_item(rec["hash"])
                 res.review += 1
                 continue
-            self.file(rec["hash"], subject)
+            try:
+                self.file(rec["hash"], subject)
+            except (OSError, InboxError) as exc:  # left in place; retried next pass
+                log.warning("inbox: %s not filed: %s", rec["rel"], exc)
+                continue
             res.filed += 1
         return dirty
 
@@ -525,7 +529,10 @@ class InboxWatcher:
     def reconcile(self) -> bool:
         rows = self.db.q("SELECT hash FROM items WHERE status='filing'")
         for row in rows:
-            self._move(row["hash"])
+            try:
+                self._move(row["hash"])
+            except (OSError, InboxError) as exc:  # one stuck move never blocks the scan
+                log.warning("inbox: move of %s not finished: %s", row["hash"][:12], exc)
         return bool(rows)
 
     # ---- catalog ---------------------------------------------------------------------------
