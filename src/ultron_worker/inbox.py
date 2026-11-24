@@ -498,10 +498,6 @@ class InboxWatcher:
         rec = self.db.item(h) or {}
         src, dest = self._abs(rec["rel"]), self._abs(rec["dest"])
         if src.exists():
-            if dest.exists() and sha256(dest) != h:
-                # taken since the name was chosen: choose again next pass
-                self.db.update(h, status="waiting", dest=None)
-                raise InboxError(f"{rec['dest']} is taken by other media; not overwritten")
             if not dest.exists():
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 try:
@@ -513,9 +509,12 @@ class InboxWatcher:
                         tmp.unlink(missing_ok=True)
                         raise InboxError(f"copy of {rec['rel']} did not verify") from None
                     os.replace(tmp, dest)
-            if src.exists():
-                src.unlink()  # dest holds the same bytes (verified above)
-        elif not dest.exists():
+            if src.exists():  # dest was already there: unlink only over verified bytes
+                if sha256(dest) != h:
+                    self.db.update(h, status="waiting", dest=None)
+                    raise InboxError(f"{rec['dest']} is taken by other media; not overwritten")
+                src.unlink()
+        elif not dest.exists() or sha256(dest) != h:
             self.db.update(h, status="missing")
             return
         with self.db.tx():
