@@ -345,6 +345,9 @@ class InboxWatcher:
         rec = self.db.item(h)
         media = "video" if path.suffix.lower() in VIDEO_EXTS else "image"
         if rec is None:
+            # new bytes at a path a pending item held: that item was replaced, not this one
+            self.db.q("UPDATE items SET status='missing' WHERE rel=? AND hash!=? AND status IN"
+                      " ('waiting', 'review')", rel, h)  # fmt: skip
             self.db.q(
                 "INSERT INTO items(hash, feeder, rel, media, bytes, src_mtime, arrived_at, status)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting')",
