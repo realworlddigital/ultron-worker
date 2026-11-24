@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 from pathlib import Path
 
 from .gdrive import SCOPE
@@ -33,6 +34,12 @@ def main(argv: list[str] | None = None) -> int:
     fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(creds.to_json())
+    if os.name == "nt":  # mode bits mean nothing there: the same user-only ACL as runner.key
+        user = os.environ.get("USERNAME", "")
+        subprocess.run(
+            ["icacls", str(out), "/inheritance:r", "/grant:r", f"{user}:(R,W)", "SYSTEM:(R)"],
+            check=True, capture_output=True,
+        )  # fmt: skip
     print(f"signed in; wrote {out}")
     return 0
 
