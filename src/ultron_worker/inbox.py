@@ -169,6 +169,9 @@ class InboxDB:
     def queued(self) -> list[sqlite3.Row]:
         return self.q("SELECT * FROM outbox ORDER BY seq")
 
+    def has(self, key: str) -> bool:
+        return bool(self.q("SELECT 1 FROM outbox WHERE key=?", key))
+
     def done(self, seq: int) -> None:
         self.q("DELETE FROM outbox WHERE seq=?", seq)
 
@@ -674,6 +677,7 @@ class InboxWatcher:
 
     # ---- sync commands ---------------------------------------------------------------------
     def handle_syncs(self) -> int:
+        self.flush()  # a finished command still queued is delivered, never run twice
         try:
             mine = [c for c in self.bb.media_syncs("acked")
                     if (c.get("data") or {}).get("acked_by") == self.cfg.actor]  # fmt: skip
@@ -687,6 +691,8 @@ class InboxWatcher:
             feeder = self.feeders.get(str(data.get("feeder_id")))
             if feeder is None or self.stop.is_set():
                 continue  # another worker's feeder: not ours to ack
+            if self.db.has(f"finish:{cid}"):
+                continue  # ran already; its outcome waits in the outbox
             if cmd.get("status", "pending") == "pending":
                 try:
                     self.bb.media_sync_ack(cid)
