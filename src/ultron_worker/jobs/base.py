@@ -150,6 +150,7 @@ class JobContext:
     cache: dict[str, Any] = field(default_factory=dict)
     media_roots: MediaRoots | None = None
     timing: ItemTiming = field(default_factory=ItemTiming)  # the runner resets it per item
+    backbone: Any = None  # the runner's scoped client, for kinds that publish (catalog_publish)
 
     def phase(self, name: str) -> contextlib.AbstractContextManager[None]:
         """Time a block of the current item under ``name`` (see the runner's per-item line)."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import itertools
 import json
 import threading
@@ -21,6 +22,7 @@ LOCAL_JOB_TRANSITIONS = {
     "in_progress": ["done", "needs_david", "cancelled"],
     "needs_david": ["dispatched", "done", "cancelled"],
 }
+MEDIA_ORGS = ("guild_hall", "gcs", "gea", "personal")  # record.media_asset's org enum
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
@@ -45,6 +47,10 @@ class FakeBackbone(Backbone):
         self.media_calls: list[tuple[str, str]] = []
         self.paused: set[str] = set()
         self.syncs: dict[str, dict[str, Any]] = {}
+        self.assets: dict[str, dict[str, Any]] = {}  # mas_ id -> record doc (data + version)
+        self.assets_down = False  # only the media-asset routes are unreachable
+        self.asset_down_after: int | None = None  # ...after this many more asset calls
+        self.asset_reject: set[str] = set()  # content hashes the backbone answers 422 for
 
     def add(
         self,
@@ -119,9 +125,42 @@ class FakeBackbone(Backbone):
         if path.startswith("/system/status/"):
             self.statuses.append(dict(body or {}))
             return {"ok": True}
+        if parts[0] == "records" or parts[:2] == ["media", "assets"]:
+            return self._asset(method, parts, body or {})
         if parts[0] == "media":
             return self._media(method, parts[1:], params, body or {})
         raise AssertionError(f"unexpected {method} {path}")
+
+    def _asset(self, method: str, parts: list[str], body: dict[str, Any]) -> Any:
+        """GET /records/mas_... and PUT /media/assets as the backbone's MediaCatalog does them."""
+        if self.asset_down_after is not None:
+            self.assets_down = self.asset_down_after <= 0
+            self.asset_down_after -= 1
+        if self.assets_down:
+            raise BackboneUnavailable("media assets: connection reset")
+        if method == "GET":
+            doc = self.assets.get(parts[1])
+            if doc is None:
+                raise BackboneError(404, f"no records/{parts[1]}")
+            return json.loads(json.dumps(doc))
+        content_hash = body["content_hash"]
+        if content_hash in self.asset_reject or body.get("org") not in MEDIA_ORGS:
+            raise BackboneError(422, f"record.media_asset invalid: org={body.get('org')!r}")
+        assert not body["locations"][0]["path"].startswith("/")
+        aid = "mas_" + hashlib.sha256(content_hash.encode()).hexdigest()[:24]
+        data = json.loads(json.dumps(body))
+        data.setdefault("embedding", None)
+        cur = self.assets.get(aid)
+        if cur is None:
+            data["provenance"]["ingested_by"] = self.actor
+            self.assets[aid] = {"id": aid, "type": "record.media_asset", "version": 1, "data": data}
+            return {"doc": self.assets[aid], "event_id": "e", "replayed": False}
+        data["provenance"]["ingested_by"] = cur["data"]["provenance"]["ingested_by"]
+        data["provenance"]["ingested_at"] = cur["data"]["provenance"]["ingested_at"]
+        if data == cur["data"]:
+            return {"doc": cur, "event_id": None, "replayed": True}
+        cur.update(data=data, version=cur["version"] + 1)
+        return {"doc": cur, "event_id": "e", "replayed": False}
 
     def _media(self, method: str, parts: list[str], params: Any, body: dict[str, Any]) -> Any:
         kind = parts[0]

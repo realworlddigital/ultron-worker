@@ -18,6 +18,7 @@ BUILTIN = (
     "ultron_worker.jobs.embeddings",
     "ultron_worker.jobs.transcribe",
     "ultron_worker.jobs.inventory",
+    "ultron_worker.jobs.publish",
 )
 
 

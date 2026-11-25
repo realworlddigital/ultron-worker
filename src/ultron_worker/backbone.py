@@ -27,6 +27,7 @@ WRITE_TIMEOUT = 10.0
 TASK_ID = r"[A-Za-z0-9_\-]+"
 FEEDER = r"[a-z0-9][a-z0-9-]{0,47}"
 MEDIA_ITEM = r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}"
+MEDIA_ASSET = r"mas_[0-9a-f]{24}"  # record.media_asset ids: mas_<sha256(content_hash)[:24]>
 # (method, path pattern): the runner's whole API surface.
 ALLOWED = (
     ("GET", re.compile(r"/me")),
@@ -43,6 +44,8 @@ ALLOWED = (
     ("PUT", re.compile(rf"/media/ingest/{FEEDER}")),
     ("PUT", re.compile(rf"/media/items/{MEDIA_ITEM}")),
     ("GET", re.compile(r"/media/sync")),
+    ("GET", re.compile(rf"/records/{MEDIA_ASSET}")),
+    ("PUT", re.compile(r"/media/assets")),
     ("GET", re.compile(r"/media/inbox")),  # read-only: the feeders' paused flag
     ("POST", re.compile(rf"/media/sync/{TASK_ID}/(ack|finish)")),
 )
@@ -103,6 +106,8 @@ class Backbone:
             raise ScopeViolation("the runner registers only feeders it works itself")
         if path == "/media/sync" and (params or {}).get("status") not in ("pending", "acked"):
             raise ScopeViolation("sync polls name status pending or acked")
+        if path == "/media/assets" and not isinstance((body or {}).get("content_hash"), str):
+            raise ScopeViolation("media asset writes name their content_hash")
         if (method, path) == ("POST", "/events"):
             body = body or {}
             target = body.get("target") or {}
@@ -232,6 +237,20 @@ class Backbone:
 
     def media_heartbeat(self, watcher: str, body: dict[str, Any]) -> Any:
         return self.request("PUT", f"/media/ingest/{watcher}", body=body)
+
+    def media_asset(self, asset_id: str) -> dict[str, Any] | None:
+        """One record.media_asset (``mas_...``), or None when the backbone has none yet."""
+        try:
+            doc: dict[str, Any] = self.request("GET", f"/records/{asset_id}")
+        except BackboneError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        return doc
+
+    def put_media_asset(self, body: dict[str, Any]) -> Any:
+        """Create or replace one record.media_asset (the server derives its id)."""
+        return self.request("PUT", "/media/assets", body=body)
 
     def media_item(self, item_id: str, body: dict[str, Any]) -> Any:
         return self.request("PUT", f"/media/items/{item_id}", body=body)
