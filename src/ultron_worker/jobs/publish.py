@@ -214,6 +214,7 @@ class CatalogPublish(JobKind):
         technical.setdefault("size_bytes", stamp["size_bytes"])
         result["content_hash"] = content_hash
         if writeback:
+            writeback["stamp"] = stamp
             result["writeback"] = writeback
             _queue(ctx, index, ctx.media_roots.identity(rec), writeback)
         org = item.payload["org"]
@@ -694,8 +695,11 @@ def _flush(ctx: JobContext, index: Path) -> None:
         for rec in records:
             if not isinstance(rec, dict):
                 continue
-            fields = pending.get(roots.identity(rec))
-            for key, value in (fields or {}).items():
+            fields = dict(pending.get(roots.identity(rec)) or {})
+            stamp = fields.pop("stamp", None)
+            if stamp and has_stamp(rec) and not stamp_matches(rec, stamp):
+                continue  # the file was replaced and re-tagged since: that hash isn't its
+            for key, value in fields.items():
                 missing = _content_hash(rec) if key == "content_hash" else _technical(rec)
                 if missing is None:
                     rec[key], changed = value, True
