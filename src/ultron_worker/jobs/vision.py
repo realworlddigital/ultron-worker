@@ -9,6 +9,7 @@ Without ffmpeg, videos are listed as skipped (never silently dropped).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -16,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,7 @@ from .base import (
     JobError,
     JobKind,
     JobSpec,
+    JobStopped,
     Output,
     WorkItem,
     file_key,
@@ -63,6 +66,7 @@ REPAIR = (
 FRAME_SIDE = 768
 COPY_SCRIPT = "import shutil, sys; shutil.copyfile(sys.argv[1], sys.argv[2])"
 COPY_MIN_BYTES_PER_S = 5_000_000  # scratch-copy deadline: FRAME_TIMEOUT + size at this rate
+COPY_POLL = 0.5  # seconds between scratch-copy deadline/stop checks
 FRAME_TIMEOUT = 90  # per local ffprobe/ffmpeg call: slower than this is broken, not slow
 CAPTION_MAX = 600
 TAG_MAX = 40
@@ -306,34 +310,49 @@ class VisionTag(JobKind):
         except Exception as exc:  # noqa: BLE001 (any decode problem is this item's problem)
             raise ItemFailed(f"unreadable image: {exc}") from exc
 
-    def _copy(self, path: Path, local: Path) -> None:
+    def _copy(self, path: Path, local: Path, ctx: JobContext) -> None:
         """Copy ``path`` to ``local`` in a child process with a size-based deadline: a read
         that stalls on the share can't be interrupted in-thread and would hold the job thread
-        (and every queued card) forever."""
+        (and every queued card) forever. The child is killed on the deadline or a runner stop,
+        so it never outlives the item."""
         try:
             size = path.stat().st_size
         except OSError as exc:
             raise ItemFailed(f"unreadable video: {exc}") from exc
         deadline = FRAME_TIMEOUT + size / COPY_MIN_BYTES_PER_S
         try:
-            subprocess.run(
+            proc = subprocess.Popen(
                 [sys.executable, "-c", COPY_SCRIPT, str(path), str(local)],
-                capture_output=True,
-                timeout=deadline,
-                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
-        except subprocess.TimeoutExpired as exc:
-            log.warning(
-                "vision_tag %s: copy to scratch (%d bytes) timed out after %.0fs",
-                path, size, deadline,
-            )  # fmt: skip
-            raise ItemFailed(
-                f"unreadable video: copy to scratch timed out after {deadline:.0f}s"
-            ) from exc
-        except (subprocess.SubprocessError, OSError) as exc:
-            raise ItemFailed(
-                f"unreadable video: copy to scratch failed: {_ffmpeg_error(exc)}"
-            ) from exc
+        except OSError as exc:
+            raise ItemFailed(f"unreadable video: copy to scratch failed: {exc}") from exc
+        started = time.monotonic()
+        try:
+            while True:
+                try:
+                    _, stderr = proc.communicate(timeout=COPY_POLL)
+                    break
+                except subprocess.TimeoutExpired:
+                    if ctx.stop.is_set():
+                        raise JobStopped from None
+                    if time.monotonic() - started >= deadline:
+                        log.warning(
+                            "vision_tag %s: copy to scratch (%d bytes) timed out after %.0fs",
+                            path, size, deadline,
+                        )  # fmt: skip
+                        raise ItemFailed(
+                            f"unreadable video: copy to scratch timed out after {deadline:.0f}s"
+                        ) from None
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=COPY_POLL)
+        if proc.returncode != 0:
+            detail = " ".join(stderr.decode(errors="replace").split())[-300:]
+            raise ItemFailed(f"unreadable video: copy to scratch failed: {detail}")
 
     def _frames(self, path: Path, scratch: Path, n: int, ctx: JobContext) -> list[Path]:
         """Sample ``n`` frames. The video is copied into the item's scratch dir first (one
@@ -345,7 +364,7 @@ class VisionTag(JobKind):
             raise ItemFailed("video skipped: ffmpeg/ffprobe not found on PATH")
         scratch.mkdir(parents=True, exist_ok=True)
         local = scratch / f"source{path.suffix.lower()}"
-        self._copy(path, local)
+        self._copy(path, local, ctx)
         try:
             probe = subprocess.run(
                 [

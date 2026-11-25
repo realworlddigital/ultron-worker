@@ -5,14 +5,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
 from ultron_worker.jobs import vision
-from ultron_worker.jobs.base import SCRATCH_DIR
+from ultron_worker.jobs.base import SCRATCH_DIR, JobContext, JobStopped
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell stubs")
 
@@ -141,3 +143,23 @@ def test_stalled_scratch_copy_is_bounded_and_fails_the_item(
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert any(str(video) in w and "copy to scratch" in w for w in warnings)
     assert not stubs.read_text() and not ollama.calls  # never probed or seeked
+
+
+def test_runner_stop_kills_a_stalled_scratch_copy(tmp_path, stubs, monkeypatch) -> None:
+    pid_file = tmp_path / "copy.pid"
+    script = (
+        f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(30)"
+    )
+    monkeypatch.setattr(vision, "COPY_SCRIPT", script)
+    monkeypatch.setattr(vision, "COPY_MIN_BYTES_PER_S", 1)  # deadline far beyond the stop
+    video = _share_video(tmp_path)
+    ctx = JobContext(task_id="t1", ollama=None, allowed_roots=(tmp_path,), work_dir=tmp_path)
+    timer = threading.Timer(1.0, ctx.stop.set)
+    timer.start()
+    started = time.monotonic()
+    with pytest.raises(JobStopped):
+        vision.VisionTag()._copy(video, tmp_path / "copy.mp4", ctx)
+    assert time.monotonic() - started < 4
+    pid = int(pid_file.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)  # killed and reaped, not left running past the stop
