@@ -123,3 +123,21 @@ def test_every_frame_timing_out_still_fails_the_item(make, tmp_path, stubs, monk
     assert not ollama.calls
     [line] = [r.getMessage() for r in caplog.records if r.getMessage().startswith("item ")]
     assert " skipped in " in line and "frame_timeouts 4" in line
+
+
+def test_stalled_scratch_copy_is_bounded_and_fails_the_item(
+    make, tmp_path, stubs, monkeypatch, caplog
+) -> None:
+    monkeypatch.setattr(vision, "COPY_SCRIPT", "import time; time.sleep(5)")  # share read hangs
+    video = _share_video(tmp_path)
+    runner, bb, ollama = make()
+    bb.add("t1", inputs=[str(video.parent)], output=str(tmp_path / "tags.jsonl"))
+    started = time.monotonic()
+    with caplog.at_level(logging.INFO, logger="ultron"):
+        runner.tick()
+    assert time.monotonic() - started < 4  # the job thread is not held by the stalled read
+    result = runner.store.item_results("t1")[str(video.resolve())]
+    assert "copy to scratch timed out" in result["skipped"]
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(str(video) in w and "copy to scratch" in w for w in warnings)
+    assert not stubs.read_text() and not ollama.calls  # never probed or seeked

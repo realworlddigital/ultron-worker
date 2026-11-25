@@ -79,8 +79,9 @@ frame scratch dirs a hard kill left under `state_dir\jobs\<task>\frames`.
    (stat 0.0s, frames 12.0s, model 70.1s x2, other 0.1s, post 0.3s)` (`x2`: a repair re-ask;
    `incl. ~Ns asleep` when the laptop slept mid-item); the phases are also kept in the item's
    checkpoint row (`items.timing`). Enumeration is logged once per job. A video is copied once
-   into the item's scratch dir and every ffprobe/ffmpeg seek reads that local copy (per-frame
-   seeks over the NAS share hung); a frame call slower than 90 s is killed and logged as a
+   into the item's scratch dir (in a child process with a deadline of 90 s + size at 5 MB/s,
+   so a stalled share read fails the item instead of holding the queue) and every
+   ffprobe/ffmpeg seek reads that local copy (per-frame seeks over the NAS share hung); a frame call slower than 90 s is killed and logged as a
    WARNING naming the file and frame index, and video lines end with `frame_timeouts N` (also
    in the record and checkpoint as `frame_timeouts`, and in progress events'
    `last_item.counts`).
