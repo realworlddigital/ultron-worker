@@ -75,6 +75,9 @@ published, counted and named in the note.
          "params": {"orgs": {"GUILD-RAW-Media/Guild Hall": "guild_hall"}}}}
 ```
 
+- **Selection**: only records of the input's own media root under the input folder; when indexes
+  disagree about a file, a tagged record wins over a failed/skipped one. The report target may
+  not be one of the indexes read.
 - **Mapping** (one work item, one checkpoint per entry):
   `content_hash` = the record's `content_hash` (`sha256:<hex>`; a bare 64-hex `sha256`/`hash` is
   accepted), else SHA-256 of the file computed now and written back into the folder index, so
@@ -100,7 +103,8 @@ published, counted and named in the note.
 - **Failures**: the backbone unreachable parks the job (retryable; every entry before is
   checkpointed, queued hashes are flushed to the index first) and the next attempt resumes at
   that entry. A 401/403 parks the card for David. Any other refusal (e.g. 422), a missing file,
-  or a file changed since it was tagged fails just that entry, counted and named.
+  a file changed since it was tagged, or an unsupported file type fails just that entry, counted
+  and named (only backbone refusals count toward the runner's first-items-all-failed stop).
 - **Result note**: `Published N catalog entries from F folder(s) as record.media_asset: C
   created, U updated, S skipped, D duplicates collapsed, H held, X failed, K hashed; A distinct
   asset(s) in the backbone`, one such line per folder, the plan per folder (index count,

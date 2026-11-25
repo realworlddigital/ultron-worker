@@ -300,3 +300,65 @@ def test_merge_only_adds_and_replays_to_no_change() -> None:
 def test_probe_without_ffprobe_publishes_size_only(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(publish.shutil, "which", lambda name: None)
     assert publish._probe(tmp_path / "x.mp4") == ({}, False)
+
+
+def _toc_add(raw: Path, index: str) -> None:
+    with (raw / "_index" / "catalog.jsonl").open("a") as fh:
+        fh.write(
+            json.dumps({"root": ROOT, "folder": index.rsplit("/", 1)[0], "index": index}) + "\n"
+        )
+
+
+def test_tagged_child_record_wins_and_other_roots_stay_out(run, raw) -> None:
+    recs = _index(raw)
+    still = dict(recs[1])
+    recs[1] = {k: v for k, v in recs[1].items() if k != "tags"} | {"failed": "timeout"}
+    (raw / NATICK / "tags.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+    stray = still | {"root": "OTHER-Media", "relpath": f"{NATICK}/stray.jpg"}
+    (raw / NATICK / "CARD2" / "tags.jsonl").write_text(
+        json.dumps(still) + "\n" + json.dumps(stray) + "\n"
+    )
+    _toc_add(raw, f"{NATICK}/CARD2/tags.jsonl")
+    bb, _, report = run(orgs=ORGS)
+    assert report["totals"]["created"] == 3 and report["totals"]["failed"] == 0
+    published = json.dumps(bb.assets)
+    assert f"{NATICK}/still.jpg" in published and "stray.jpg" not in published
+
+
+def test_report_target_that_is_a_folder_index_is_refused(run, raw) -> None:
+    index = raw / NATICK / "CARD2" / "tags.json"
+    index.write_text('{"items": []}\n')
+    _toc_add(raw, f"{NATICK}/CARD2/tags.json")
+    bb, _, _ = run(status="needs_david", output=index, orgs=ORGS)
+    assert any("is a folder index" in e.get("summary", "") for e in bb.events)
+    assert index.read_text() == '{"items": []}\n'
+
+
+def test_entry_problems_fail_their_entry_not_the_job(run, raw, monkeypatch) -> None:
+    from ultron_worker import runner
+
+    monkeypatch.setattr(runner, "BROKEN_AFTER", 2)
+    (raw / NATICK / "C001.MP4").unlink()
+    (raw / NATICK / "still.jpg").unlink()
+    bb, note, report = run(orgs=ORGS)
+    assert report["totals"]["failed"] == 2 and report["totals"]["created"] == 2
+    assert f"{ROOT}/{NATICK}/still.jpg (file missing on disk)" in note
+
+
+def test_a_hash_is_not_written_onto_a_replaced_file(raw) -> None:
+    from types import SimpleNamespace
+
+    from ultron_worker.media import MediaRoots
+
+    ctx = SimpleNamespace(cache={}, media_roots=MediaRoots({ROOT: str(raw)}))
+    index = raw / NATICK / "tags.jsonl"
+    rec = _index(raw)[1]
+    key = ctx.media_roots.identity(ctx.media_roots.normalize(rec))
+    stale = {"size_bytes": rec["size_bytes"] + 1, "mtime": rec["mtime"]}
+    publish._queue(ctx, index, key, {"content_hash": _sha(b"old"), "stamp": stale})
+    publish._flush(ctx, index)
+    assert "content_hash" not in _index(raw)[1]
+    current = {"size_bytes": rec["size_bytes"], "mtime": rec["mtime"]}
+    publish._queue(ctx, index, key, {"content_hash": _sha(PNG), "stamp": current})
+    publish._flush(ctx, index)
+    assert _index(raw)[1]["content_hash"] == _sha(PNG)
