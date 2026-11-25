@@ -53,6 +53,67 @@ root. Optional `params`: `exclude` (extra folder names to skip; `_index`, `@eaDi
   to the sidecar). `<output stem>.unindexed.json` beside the output has the full table
   (`folders: [{"root", "folder", "files", "unindexed"}]`).
 
+## `catalog_publish` (NAS catalog -> backbone `record.media_asset`)
+
+Model-free; `model` is omitted. Publishes metadata only: it never moves media bytes and never
+deletes a local or backbone record. `inputs` are folders (absolute or `ROOT/relative/...`,
+under `runner.allowed_roots` and a named media root). The entries to publish are the tagged
+records (a `tags` list, no `failed`/`skipped`) of the folder indexes the root's TOC
+`<root>/_index/catalog.jsonl` lists at or under each input folder (`<folder>/tags.jsonl` when the
+TOC lists none; no index at all parks the card). `output` is a `.json` report file.
+
+Optional `params`: `org` (the org for every entry) and `orgs` (`{folder ref: org}`, the deepest
+matching folder wins over `org`). Values: `guild_hall`, `gcs`, `gea`, `personal`. The org is
+never derived from a root or folder name. With neither, the org is `unassigned`; the backbone's
+`record.media_asset` schema has no `unassigned` org, so those entries are **held**: hashed, not
+published, counted and named in the note.
+
+```json
+{"title": "Publish NATICK to the media catalog", "owner": "apollo", "executor": "local-ultron",
+ "job": {"kind": "catalog_publish", "inputs": ["GUILD-RAW-Media/Guild Hall/2026-10-GH NATICK"],
+         "output": "GUILD-RAW-Media/_publish/2026-11-25-natick.json", "budget_minutes": 120,
+         "params": {"orgs": {"GUILD-RAW-Media/Guild Hall": "guild_hall"}}}}
+```
+
+- **Selection**: only records of the input's own media root under the input folder; when indexes
+  disagree about a file, a tagged record wins over a failed/skipped one (between two tagged, the
+  newer file). The report target may
+  not be one of the indexes read.
+- **Mapping** (one work item, one checkpoint per entry):
+  `content_hash` = the record's `content_hash` (`sha256:<hex>`; a bare 64-hex `sha256`/`hash` is
+  accepted), else SHA-256 of the file computed now and written back into the folder index, so
+  each file is hashed once ever; `kind` = the record's `media` (else by extension);
+  `technical` = the record's `technical` (or top-level `duration_sec`/`width`/`height`/`codec`/
+  `fps`), else `ffprobe` on the local file (written back too), plus `size_bytes`;
+  `tags.structured` = `caption`, `keywords` (the record's `tags`), `folder`, and any
+  `structured`/`facets` dict on the record; `tags.flat` = the lowercased keywords and facet
+  values; `provenance` = `{feeder: nas_mirror, ingested_by: ultron, ingested_at, source_ref:
+  <card id>}` (the backbone stamps `ingested_by` with the writing actor); `rights` = the record's
+  `clearance` (or `rights`; a string or `{status}`) when it is `cleared`/`needs_check`/`blocked`,
+  else `needs_check`; `org` as above; `locations` = `[{storage_id: nas-main, path:
+  "<ROOT>/<relpath>", status: verified, last_verified_at: <publish time>}]` (root-relative: the
+  media root name, then the path under it).
+- **Upsert** per entry: `GET /records/mas_<sha256(content_hash)[:24]>` (the backbone's
+  server-derived id); absent -> `PUT /media/assets` (**created**). Present -> merge: tags and
+  technical only gain, the location is added (or re-verified when its stamp is over 7 days old),
+  rights move off `needs_check` only; `kind`, `org` and `provenance` stay as first published (an
+  entry mapped to a different org is named in the note). Unchanged -> no write (**skipped**);
+  changed -> `PUT` (**updated**), and a written version other than read + 1 is named as a
+  concurrent write. An entry whose hash was already published by this job is a **duplicate
+  collapsed** (its path is one more location on the same asset).
+- **Failures**: the backbone unreachable parks the job (retryable; every entry before is
+  checkpointed, queued hashes are flushed to the index first) and the next attempt resumes at
+  that entry. A 401/403 parks the card for David. Any other refusal (e.g. 422), a missing file,
+  a file changed since it was tagged, or an unsupported file type fails just that entry, counted
+  and named (only backbone refusals count toward the runner's first-items-all-failed stop).
+- **Result note**: `Published N catalog entries from F folder(s) as record.media_asset: C
+  created, U updated, S skipped, D duplicates collapsed, H held, X failed, K hashed; A distinct
+  asset(s) in the backbone`, one such line per folder, the plan per folder (index count,
+  untagged entries not published), then the failed / held entries by name (first 20). The
+  report file has every entry (`path`, `folder`, `outcome`, `content_hash`, `asset_id`) and the
+  per-folder counts. A second identical job creates nothing: every entry is skipped or a
+  duplicate, and nothing is hashed again.
+
 ## Lifecycle (`task.states.local_job`)
 
 ```
@@ -74,6 +135,7 @@ No `needs_review`, `merge_ready` or `going_live`: a local job has no PR and no g
 | result / failure note | `POST /tasks/{id}/notes` (`update` on success, `action` on needs_david) |
 | events | `POST /events`, actions `ultron.claimed`, `ultron.resumed`, `ultron.progress`, `ultron.retry`, `ultron.completed`, `ultron.failed`, target = the card, domain = the runner's domain |
 | heartbeat | `PUT /system/status/ultron-runner` (`state`: `idle` / `working` / `paused-by-sleep`) |
+| media assets (`catalog_publish`) | `GET /records/mas_<24 hex>`, `PUT /media/assets` (body names its `content_hash`) |
 
 It reads only `GET /me` and `GET /tasks?domain=<its domain>&status=dispatched|in_progress`
 (and keeps only `task.local_job` + `local-ultron` cards from that). The client refuses any other

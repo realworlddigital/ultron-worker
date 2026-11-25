@@ -363,6 +363,7 @@ class Runner:
             media_roots=self.cfg.roots(),
             work_dir=work_dir,
             stop=self.stop,
+            backbone=self.bb,
         )
         ctx.ollama = TimedOllama(self.ollama, ctx)
         kind.validate(spec, ctx)
