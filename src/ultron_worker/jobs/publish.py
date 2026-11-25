@@ -129,19 +129,22 @@ class CatalogPublish(JobKind):
                 except (OSError, ValueError) as exc:
                     raise JobError(f"index {str(index)!r} can't be read: {exc}") from exc
                 records.extend((index, roots.normalize(r)) for r in recs)
-            untagged = 0
-            mine: list[WorkItem] = []
+            picked: dict[tuple[str, str], tuple[Path, dict[str, Any]]] = {}
             for index, rec in records:
                 if "root" not in rec or roots.lookup(str(rec["root"])) != roots.lookup(root):
                     continue
                 if not _under(rec["relpath"], folder, roots, root):
                     continue
                 key = roots.identity(rec)
-                if key in seen:
+                old = picked.get(key)
+                if key in seen or (old is not None and _tagged(old[1]) and not _tagged(rec)):
                     continue
-                seen.add(key)
+                picked[key] = (index, rec)  # a tagged record beats a failed/skipped one
+            seen.update(picked)
+            untagged = sum(1 for _, rec in picked.values() if not _tagged(rec))
+            mine: list[WorkItem] = []
+            for index, rec in picked.values():
                 if not _tagged(rec):
-                    untagged += 1
                     continue
                 ref = f"{rec['root']}/{rec['relpath']}"
                 mine.append(
