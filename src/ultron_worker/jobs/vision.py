@@ -1,13 +1,14 @@
 """vision_tag: catalog/tag images and videos with the local Ollama vision model.
 
 Images go to the model as they are (downscaled first when Pillow is installed); videos are
-sampled into ``params.video_frames`` frames with ffmpeg and tagged from those frames together.
+copied once into the item's scratch dir, sampled into ``params.video_frames`` frames with ffmpeg
+from that local copy and tagged from those frames together. A frame call that times out or
+fails is logged and counted, never silently dropped.
 Without ffmpeg, videos are listed as skipped (never silently dropped).
 """
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import logging
@@ -59,7 +60,7 @@ REPAIR = (
     'a non-empty sentence and "tags" is a JSON array of short keyword strings.'
 )
 FRAME_SIDE = 768
-SUBPROCESS_TIMEOUT = 300
+FRAME_TIMEOUT = 90  # per local ffprobe/ffmpeg call: slower than this is broken, not slow
 CAPTION_MAX = 600
 TAG_MAX = 40
 TAG_MAX_WORDS = 5
@@ -237,7 +238,7 @@ class VisionTag(JobKind):
             if item.payload["media"] == "video":
                 with ctx.phase("frames"):
                     n = int(spec.params.get("video_frames", 4))
-                    images = self._frames(path, scratch, n)
+                    images = self._frames(path, scratch, n, ctx)
             else:
                 with ctx.phase("image"):
                     images = [self._image(path, scratch)]
@@ -265,6 +266,7 @@ class VisionTag(JobKind):
         }
         if item.payload["media"] == "video":
             result["frames"] = len(images)
+            result["frame_timeouts"] = ctx.timing.counts.get("frame_timeouts", 0)
         return {**result, **stamp}
 
     def settled(self, result: dict[str, Any]) -> bool:
@@ -301,10 +303,20 @@ class VisionTag(JobKind):
         except Exception as exc:  # noqa: BLE001 (any decode problem is this item's problem)
             raise ItemFailed(f"unreadable image: {exc}") from exc
 
-    def _frames(self, path: Path, scratch: Path, n: int) -> list[Path]:
+    def _frames(self, path: Path, scratch: Path, n: int, ctx: JobContext) -> list[Path]:
+        """Sample ``n`` frames. The video is copied into the item's scratch dir first (one
+        sequential read over the share) and every probe/seek runs against that local copy:
+        per-frame seeks straight off the NAS share hung until the timeout. A frame call that
+        times out or fails is logged and dropped; the timeouts are counted on the item."""
         ffmpeg, ffprobe = shutil.which("ffmpeg"), shutil.which("ffprobe")
         if not ffmpeg or not ffprobe:
             raise ItemFailed("video skipped: ffmpeg/ffprobe not found on PATH")
+        scratch.mkdir(parents=True, exist_ok=True)
+        local = scratch / f"source{path.suffix.lower()}"
+        try:
+            shutil.copyfile(path, local)
+        except OSError as exc:
+            raise ItemFailed(f"unreadable video: copy to scratch failed: {exc}") from exc
         try:
             probe = subprocess.run(
                 [
@@ -315,22 +327,23 @@ class VisionTag(JobKind):
                     "format=duration",
                     "-of",
                     "default=noprint_wrappers=1:nokey=1",
-                    str(path),
+                    str(local),
                 ],
                 capture_output=True,
                 text=True,
-                timeout=SUBPROCESS_TIMEOUT,
+                timeout=FRAME_TIMEOUT,
                 check=True,
             )
             duration = float(probe.stdout.strip() or 0)
-        except (subprocess.SubprocessError, ValueError) as exc:
+        except (subprocess.SubprocessError, OSError, ValueError) as exc:
             raise ItemFailed(f"unreadable video: {exc}") from exc
-        scratch.mkdir(parents=True, exist_ok=True)
-        frames = []
-        for i in range(max(1, n)):
+        frames: list[Path] = []
+        timeouts = failures = 0
+        wanted = max(1, n)
+        for i in range(wanted):
             at = duration * (i + 1) / (n + 1) if duration > 0 else 0
             out = scratch / f"frame{i:02d}.jpg"
-            with contextlib.suppress(subprocess.SubprocessError):
+            try:
                 subprocess.run(
                     [
                         ffmpeg,
@@ -340,7 +353,7 @@ class VisionTag(JobKind):
                         "-ss",
                         f"{at:.2f}",
                         "-i",
-                        str(path),
+                        str(local),
                         "-frames:v",
                         "1",
                         "-vf",
@@ -348,13 +361,31 @@ class VisionTag(JobKind):
                         str(out),
                     ],
                     capture_output=True,
-                    timeout=SUBPROCESS_TIMEOUT,
+                    timeout=FRAME_TIMEOUT,
                     check=True,
                 )
+            except subprocess.TimeoutExpired:
+                timeouts += 1
+                log.warning(
+                    "vision_tag %s: frame %d/%d (at %.2fs) timed out after %gs; dropped",
+                    path, i, wanted, at, FRAME_TIMEOUT,
+                )  # fmt: skip
+                continue
+            except (subprocess.SubprocessError, OSError) as exc:
+                failures += 1
+                log.warning(
+                    "vision_tag %s: frame %d/%d (at %.2fs) failed; dropped: %s",
+                    path, i, wanted, at, _ffmpeg_error(exc),
+                )  # fmt: skip
+                continue
             if out.is_file():
                 frames.append(out)
+        ctx.count("frame_timeouts", timeouts)
         if not frames:
-            raise ItemFailed("no frames could be extracted")
+            raise ItemFailed(
+                f"no frames could be extracted ({timeouts} of {wanted} frame calls timed out "
+                f"after {FRAME_TIMEOUT:g}s, {failures} failed)"
+            )
         return frames
 
     def finalize(
@@ -424,6 +455,14 @@ def _failed(result: dict[str, Any]) -> dict[str, Any]:
         "failed": str(reason),
     }
     return {k: v for k, v in out.items() if v is not None}
+
+
+def _ffmpeg_error(exc: BaseException) -> str:
+    stderr = getattr(exc, "stderr", None)
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode(errors="replace")
+    detail = " ".join(str(stderr or "").split())[-300:]
+    return f"{exc}: {detail}" if detail else str(exc)
 
 
 def _location(path: Path, ctx: JobContext) -> dict[str, str]:

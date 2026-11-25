@@ -48,7 +48,7 @@ def test_one_timing_line_per_item_with_every_phase(make, tmp_path, monkeypatch, 
     (lib / "C8562.MP4").write_bytes(b"\0" * 16)
     (lib / "a.png").write_bytes(PNG)
 
-    def fake_frames(self, path, scratch, n):  # type: ignore[no-untyped-def]
+    def fake_frames(self, path, scratch, n, ctx):  # type: ignore[no-untyped-def]
         time.sleep(0.05)
         scratch.mkdir(parents=True, exist_ok=True)
         frame = scratch / "frame00.png"
@@ -350,7 +350,7 @@ def test_progress_event_carries_the_last_items_phases(make, tmp_path, monkeypatc
     lib.mkdir()
     (lib / "C8563.MP4").write_bytes(b"\0" * 16)
 
-    def fake_frames(self, path, scratch, n):  # type: ignore[no-untyped-def]
+    def fake_frames(self, path, scratch, n, ctx):  # type: ignore[no-untyped-def]
         time.sleep(0.05)
         scratch.mkdir(parents=True, exist_ok=True)
         frame = scratch / "frame00.png"

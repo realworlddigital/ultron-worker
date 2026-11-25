@@ -102,11 +102,13 @@ class Output:
 
 
 class ItemTiming:
-    """Where one work item's time went: wall seconds (and call counts) per named phase."""
+    """Where one work item's time went: wall seconds (and call counts) per named phase, plus
+    named event counts a job reports (e.g. ``frame_timeouts``)."""
 
     def __init__(self) -> None:
         self.seconds: dict[str, float] = {}
         self.calls: dict[str, int] = {}
+        self.counts: dict[str, int] = {}
 
     @contextlib.contextmanager
     def phase(self, name: str) -> Iterator[None]:
@@ -152,6 +154,10 @@ class JobContext:
     def phase(self, name: str) -> contextlib.AbstractContextManager[None]:
         """Time a block of the current item under ``name`` (see the runner's per-item line)."""
         return self.timing.phase(name)
+
+    def count(self, name: str, n: int = 0) -> None:
+        """Add ``n`` to the current item's ``name`` count (shown in its timing line even at 0)."""
+        self.timing.counts[name] = self.timing.counts.get(name, 0) + n
 
     def __post_init__(self) -> None:
         if self.media_roots is None:

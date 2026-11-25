@@ -78,7 +78,12 @@ frame scratch dirs a hard kill left under `state_dir\jobs\<task>\frames`.
    with where its time went, e.g. `item GUILD-RAW-Media/Guild Hall/C8562.MP4 done in 83.2s
    (stat 0.0s, frames 12.0s, model 70.1s x2, other 0.1s, post 0.3s)` (`x2`: a repair re-ask;
    `incl. ~Ns asleep` when the laptop slept mid-item); the phases are also kept in the item's
-   checkpoint row (`items.timing`). Enumeration is logged once per job.
+   checkpoint row (`items.timing`). Enumeration is logged once per job. A video is copied once
+   into the item's scratch dir and every ffprobe/ffmpeg seek reads that local copy (per-frame
+   seeks over the NAS share hung); a frame call slower than 90 s is killed and logged as a
+   WARNING naming the file and frame index, and video lines end with `frame_timeouts N` (also
+   in the record and checkpoint as `frame_timeouts`, and in progress events'
+   `last_item.counts`).
 3. **Progress.** `ultron.progress` events (done/total, current file) go out at most every
    `progress_seconds`. For job kinds that time phases (vision_tag, and every kind that calls the
    model), an event sent after an item appends that item's phases after the unchanged
