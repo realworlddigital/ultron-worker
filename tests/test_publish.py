@@ -362,3 +362,17 @@ def test_a_hash_is_not_written_onto_a_replaced_file(raw) -> None:
     publish._queue(ctx, index, key, {"content_hash": _sha(PNG), "stamp": current})
     publish._flush(ctx, index)
     assert _index(raw)[1]["content_hash"] == _sha(PNG)
+
+
+def test_between_two_tagged_records_the_newer_file_wins(run, raw) -> None:
+    recs = _index(raw)
+    stale = recs[1] | {"mtime": recs[1]["mtime"] - 100, "size_bytes": 1}
+    (raw / NATICK / "CARD2" / "tags.jsonl").write_text(json.dumps(stale) + "\n")
+    with (raw / "_index" / "catalog.jsonl").open() as fh:
+        first = fh.read()
+    (raw / "_index" / "catalog.jsonl").write_text(
+        first + json.dumps({"root": ROOT, "folder": f"{NATICK}/CARD2",
+                            "index": f"{NATICK}/CARD2/tags.jsonl"}) + "\n"
+    )  # fmt: skip
+    _, _, report = run(orgs=ORGS)
+    assert report["totals"]["failed"] == 0 and report["totals"]["created"] == 3

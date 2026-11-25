@@ -76,7 +76,8 @@ published, counted and named in the note.
 ```
 
 - **Selection**: only records of the input's own media root under the input folder; when indexes
-  disagree about a file, a tagged record wins over a failed/skipped one. The report target may
+  disagree about a file, a tagged record wins over a failed/skipped one (between two tagged, the
+  newer file). The report target may
   not be one of the indexes read.
 - **Mapping** (one work item, one checkpoint per entry):
   `content_hash` = the record's `content_hash` (`sha256:<hex>`; a bare 64-hex `sha256`/`hash` is

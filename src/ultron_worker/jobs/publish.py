@@ -141,9 +141,9 @@ class CatalogPublish(JobKind):
                     continue
                 key = roots.identity(rec)
                 old = picked.get(key)
-                if key in seen or (old is not None and _tagged(old[1]) and not _tagged(rec)):
+                if key in seen or (old is not None and not _better(rec, old[1])):
                     continue
-                picked[key] = (index, rec)  # a tagged record beats a failed/skipped one
+                picked[key] = (index, rec)
             seen.update(picked)
             untagged = sum(1 for _, rec in picked.values() if not _tagged(rec))
             mine: list[WorkItem] = []
@@ -349,6 +349,13 @@ def _org_for(
         ):
             return org
     return UNASSIGNED
+
+
+def _better(rec: dict[str, Any], than: dict[str, Any]) -> bool:
+    """A tagged record beats a failed/skipped one; between two tagged, the newer file wins."""
+    if _tagged(rec) != _tagged(than):
+        return _tagged(rec)
+    return float(rec.get("mtime") or 0) > float(than.get("mtime") or 0)
 
 
 def _same(path: Path) -> str:
