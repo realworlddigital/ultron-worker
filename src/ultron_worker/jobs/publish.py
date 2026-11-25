@@ -179,16 +179,21 @@ class CatalogPublish(JobKind):
     def run_item(self, item: WorkItem, spec: JobSpec, ctx: JobContext) -> dict[str, Any]:
         rec: dict[str, Any] = item.payload["record"]
         index = Path(item.payload["index"])
+        result: dict[str, Any] = {"path": item.label, "folder": item.payload["folder"]}
+        # An entry's own problem is a settled per-entry failure, not a sign of a broken job.
         where = ctx.media_roots.absolute(rec)
         if where is None:
-            raise ItemFailed("no path under the configured media roots")
+            return {**result, "error": "no path under the configured media roots"}
         path = ctx.allowed(where, what="media file")
         if not path.is_file():
-            raise ItemFailed("file missing on disk")
+            return {**result, "error": "file missing on disk"}
         stamp = file_stamp(path)
         if has_stamp(rec) and not stamp_matches(rec, stamp):
-            raise ItemFailed("file changed since it was tagged; re-tag before publishing")
-        result: dict[str, Any] = {"path": item.label, "folder": item.payload["folder"]}
+            return {**result, "error": "file changed since it was tagged; re-tag before publishing"}
+        try:
+            _kind(rec, path)
+        except ItemFailed as exc:
+            return {**result, "error": str(exc)}
         writeback: dict[str, Any] = {}
         content_hash = _content_hash(rec)
         if content_hash is None:
@@ -250,9 +255,10 @@ class CatalogPublish(JobKind):
                     ("created", "updated", "skipped", "duplicates", "held", "failed", "hashed"), 0
                 ),
             )
-            if "skipped" in res or "failed" in res:
+            if "skipped" in res or "failed" in res or "error" in res:
                 outcome = "failed"
-                named["failed"].append(f"{item.label} ({res.get('skipped') or res.get('failed')})")
+                why = res.get("error") or res.get("skipped") or res.get("failed")
+                named["failed"].append(f"{item.label} ({why})")
             elif "held" in res:
                 outcome = "held"
                 named["held"].append(item.label)
