@@ -20,6 +20,7 @@ Metadata only: media bytes are never moved and nothing local or in the backbone 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -117,6 +118,9 @@ class CatalogPublish(JobKind):
             root, folder = roots.relativize(ctx.allowed(raw, what="input"))  # type: ignore[misc]
             label = f"{root}/{folder}" if folder else root
             indexes = _indexes(root, folder, ctx)
+            out = _same(ctx.allowed(spec.output, what="output target"))
+            if any(_same(index) == out for index in indexes):
+                raise JobError(f"output target {spec.output!r} is a folder index it would replace")
             if not indexes:
                 raise JobError(
                     f"{label}: no folder index (tags.jsonl) in the TOC or in the folder; tag it "
@@ -338,6 +342,10 @@ def _org_for(
         ):
             return org
     return UNASSIGNED
+
+
+def _same(path: Path) -> str:
+    return os.path.normcase(str(path.resolve(strict=False)))
 
 
 def _under(relpath: str, folder: str, roots: MediaRoots, root: str) -> bool:
