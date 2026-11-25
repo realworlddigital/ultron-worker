@@ -449,7 +449,11 @@ class Runner:
                 name, post = _item_name(item, ctx), time.perf_counter() - post_started
                 if time.monotonic() - last_progress >= self.cfg.progress_seconds:
                     last_progress = time.monotonic()
-                    last = _last_item(name, result, timing, post) if ctx.timing.seconds else None
+                    last = (
+                        _last_item(name, result, timing, post, ctx.timing.counts)
+                        if ctx.timing.seconds
+                        else None
+                    )
                     self._progress(tid, done, len(items), item.label, active, last)
                 log.info(
                     _item_line(
@@ -459,6 +463,7 @@ class Runner:
                         ctx.timing.calls,
                         post=post,
                         slept=self.board.sleep_seconds_total - slept_before,
+                        counts=ctx.timing.counts,
                     )
                 )
             self.board.update_current(current_item="writing output")
@@ -728,23 +733,34 @@ def _outcome(result: dict[str, Any]) -> str:
 
 
 def _last_item(
-    name: str, result: dict[str, Any], timing: dict[str, float], post: float
+    name: str,
+    result: dict[str, Any],
+    timing: dict[str, float],
+    post: float,
+    counts: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """The ``last_item`` payload of a progress event: the same phases as the item's log line."""
+    """The ``last_item`` payload of a progress event: the same phases (and counts) as the
+    item's log line."""
     outcome = _outcome(result)
     phases = {k: v for k, v in timing.items() if k != "total"}
     phases["post"] = round(post, 3)
-    return {
+    last = {
         "name": name,
         "outcome": outcome,
         "phases": phases,
         "total_s": round(timing["total"] + post, 3),
         "error": None if outcome == "done" else str(result[outcome]),
     }
+    if counts:
+        last["counts"] = dict(counts)
+    return last
 
 
 def _last_item_text(last: dict[str, Any]) -> str:
-    phases = ", ".join(f"{k} {v:.1f}s" for k, v in last["phases"].items())
+    phases = ", ".join(
+        [f"{k} {v:.1f}s" for k, v in last["phases"].items()]
+        + [f"{k} {n}" for k, n in (last.get("counts") or {}).items()]
+    )
     if last["outcome"] == "done":
         return f"{last['name']}: {phases}"
     error = " ".join(last["error"].split())
@@ -760,6 +776,7 @@ def _item_line(
     *,
     post: float,
     slept: float,
+    counts: dict[str, int] | None = None,
 ) -> str:
     outcome = _outcome(result)
     parts = []
@@ -769,6 +786,7 @@ def _item_line(
         n = calls.get(phase, 1)
         parts.append(f"{phase} {sec:.1f}s" + (f" x{n}" if n > 1 else ""))
     parts.append(f"post {post:.1f}s")
+    parts.extend(f"{k} {n}" for k, n in (counts or {}).items())
     if slept > 0:
         parts.append(f"incl. ~{slept:.0f}s asleep")
     return f"item {name} {outcome} in {timing['total'] + post:.1f}s ({', '.join(parts)})"
