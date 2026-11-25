@@ -132,7 +132,9 @@ class CatalogPublish(JobKind):
             untagged = 0
             mine: list[WorkItem] = []
             for index, rec in records:
-                if "root" not in rec or not _under(rec["relpath"], folder, roots, root):
+                if "root" not in rec or roots.lookup(str(rec["root"])) != roots.lookup(root):
+                    continue
+                if not _under(rec["relpath"], folder, roots, root):
                     continue
                 key = roots.identity(rec)
                 if key in seen:
