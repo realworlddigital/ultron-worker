@@ -206,6 +206,11 @@ class ClipSegment(JobKind):
                     payload={
                         "asset_id": asset_id(content_hash) if content_hash else None,
                         "record": {"root": rec["root"], "relpath": rec["relpath"]},
+                        **(
+                            {"stamp": {k: rec[k] for k in ("size_bytes", "mtime")}}
+                            if has_stamp(rec)
+                            else {}
+                        ),  # fmt: skip
                         "folder": label,
                         "org": _org_for(rec, orgs, roots),
                     },
@@ -251,6 +256,15 @@ class ClipSegment(JobKind):
         if path is None or not path.is_file():
             return {**result, "error": "file missing on disk"}
         stamp = file_stamp(path)
+        # The file must still be the bytes the parent was published from: a replaced take would
+        # put its ranges and captions on the old asset.
+        size = (pdata.get("technical") or {}).get("size_bytes")
+        tagged = payload.get("stamp")
+        if (tagged and not stamp_matches(tagged, stamp)) or (
+            isinstance(size, int) and size != stamp["size_bytes"]
+        ):
+            return {**result, "error": "file changed since it was published; re-tag and "
+                    "re-publish it (vision_tag, catalog_publish) before segmenting"}  # fmt: skip
         # The backbone bounds every range by the parent's own duration: without one no clip
         # could be written, so don't spend model time on it.
         duration = _num((pdata.get("technical") or {}).get("duration_sec"))

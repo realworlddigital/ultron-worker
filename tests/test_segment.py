@@ -413,3 +413,16 @@ def test_report_target_that_is_a_folder_index_is_refused(run, raw) -> None:
     bb, _, _, _ = run(status="needs_david", output=index, orgs=ORGS)
     assert any("is a folder index" in e.get("summary", "") for e in bb.events)
     assert index.read_text() == '{"items": []}\n'
+
+
+@pytest.mark.parametrize("by_id", [False, True])
+def test_replaced_footage_is_not_clipped_under_the_old_asset(run, raw, videos, by_id) -> None:
+    parents = _parents(raw)
+    talk = next(a for a, d in parents.items() if d["data"]["locations"][0]["path"].endswith(
+        f"{NATICK}/talk.mp4"))  # fmt: skip
+    bb, _, _, _ = run(orgs=ORGS, ticks=0, status="dispatched", inputs=[talk] if by_id else None)
+    bb.assets[talk]["data"]["technical"]["size_bytes"] = (raw / NATICK / "talk.mp4").stat().st_size
+    shutil.copyfile(videos["other.mp4"], raw / NATICK / "talk.mp4")  # replaced in place
+    bb, note, report, _ = run(add=False, orgs=ORGS)
+    assert talk not in {c["parent_asset_id"] for c in _clips(bb).values()}
+    assert "file changed since it was published" in note
