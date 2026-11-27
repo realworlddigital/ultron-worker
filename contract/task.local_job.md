@@ -114,6 +114,59 @@ published, counted and named in the note.
   per-folder counts. A second identical job creates nothing: every entry is skipped or a
   duplicate, and nothing is hashed again.
 
+## `clip_segment` (long videos -> virtual clips, backbone `record.media_asset` clips)
+
+Cuts long footage into short, precisely-tagged clips for social use. A clip is a **virtual**
+range on its source asset (apollo-backbone clip contract, tsk_db23b53be4aa4333808c): nothing is
+cut, copied or stored in the catalog (the NAS listener materializes a clip when a stage request
+asks for it). `inputs` are folders (as `catalog_publish`: the TOC's folder indexes at or under
+each) and/or asset ids (`mas_<24 hex>`, resolved through the asset's verified `nas-main`
+location). `model` is the vision model (default `muse-glimmer:30b`). `output` is a `.json`
+report file.
+
+`params`: `org` / `orgs` exactly as `catalog_publish` (deepest folder wins, never derived from a
+name). Unmapped footage is **held**: not segmented, not published, named in the note. A mapping
+that disagrees with the parent's published org is held too (a clip always carries its parent's
+org). Window: `min_sec` 12 / `max_sec` 40 (hard bounds), `target_min_sec` 15 /
+`target_max_sec` 30 (where cuts are looked for first); `frames` (per segment, default 3, 1-8),
+`max_tags` (15), `scene_threshold` (0.3), `silence_db` (-35), `silence_min_sec` (0.6),
+`prompt`, `options`.
+
+- **Per asset** (one work item per parent video; its catalog record must exist, so run
+  `catalog_publish` first): videos no longer than `max_sec` are counted `short`, not cut. The
+  file is copied to the item's scratch once; one ffmpeg pass finds scene changes (5 fps,
+  downscaled, `select=gt(scene,thr)`) and silences (`silencedetect`). Segments are cut greedily:
+  the next cut is a speech break (the clip ends just after a silence starts, the next opens just
+  before it ends) or a scene change, nearest the middle of the target window, then anywhere in
+  the hard bounds, else a hard cut at `target_max_sec`. Dead air at a segment's start and at the
+  end of the video is skipped. Ranges are rounded to 0.01 s and deterministic for the same file.
+- **Verdict + tags**: the model sees `frames` frames from inside each segment and replies
+  `{"usable", "reason", "caption", "tags"}`; usable = a person mid-action or mid-sentence, a
+  working build, a demonstration, a reaction; not dead air, setup, an empty room. A kept
+  segment needs a caption and tags (vision_tag's strict parsing and filler filter; one repair
+  re-ask, then the asset is retried for just the unjudged segments).
+- **Clip record** per kept segment, `PUT /media/assets` with `parent_asset_id`,
+  `range_start_sec`, `range_end_sec`, `kind` and `org` (the parent's), `rights: null`,
+  `tags.structured` = `caption`, `keywords`, `usable_because`, `segmented_by` (the model),
+  `tags.flat` = the keywords (the range's own content, never the parent's caption),
+  `provenance` = `{feeder: ultron_segmentation, ingested_by: ultron, ingested_at, source_ref:
+  <card id>}`; no `content_hash`, `locations` or `technical` (the backbone derives the range's
+  technical from the parent). The backbone derives the clip id from parent + range
+  (`mas_<sha256("clip:<parent>:<start:.3f>:<end:.3f>")[:24]>`), so a re-run upserts onto the
+  same records and never duplicates. A parent without `technical.duration_sec` in the catalog
+  fails its asset before any model call (the backbone bounds ranges by it).
+- **Resume**: per-asset progress (analysis, each segment's verdict, each published clip id) is
+  saved in `<state_dir>/jobs/<card>/segments/<parent id>.json` after every step, so a job killed
+  mid-asset resumes at the next unjudged segment (no re-analysis while the file is unchanged);
+  finished assets are runner checkpoints and are never segmented again by that card. A backbone
+  outage parks the job (retryable) at the clip it was writing; a 401/403 parks it for David;
+  any other refusal fails just that clip (named in the note).
+- **Result note**: `Segmented A asset(s) into virtual clips: P segments proposed, K kept, H held
+  (no org), S too short, F failed; clips C created, U updated, N unchanged`, one line per
+  segmented asset (parent id, duration, proposed/kept, created/updated/unchanged), the plan, the
+  held and failed assets by name, and the clip ids created. The report file has every asset
+  (outcome, parent, ranges kept with ids and captions, rejected ranges with reasons).
+
 ## Lifecycle (`task.states.local_job`)
 
 ```
@@ -136,6 +189,7 @@ No `needs_review`, `merge_ready` or `going_live`: a local job has no PR and no g
 | events | `POST /events`, actions `ultron.claimed`, `ultron.resumed`, `ultron.progress`, `ultron.retry`, `ultron.completed`, `ultron.failed`, target = the card, domain = the runner's domain |
 | heartbeat | `PUT /system/status/ultron-runner` (`state`: `idle` / `working` / `paused-by-sleep`) |
 | media assets (`catalog_publish`) | `GET /records/mas_<24 hex>`, `PUT /media/assets` (body names its `content_hash`) |
+| media clips (`clip_segment`) | `GET /records/mas_<24 hex>` (the parent), `PUT /media/assets` (body names `parent_asset_id` + range, no `content_hash`) |
 
 It reads only `GET /me` and `GET /tasks?domain=<its domain>&status=dispatched|in_progress`
 (and keeps only `task.local_job` + `local-ultron` cards from that). The client refuses any other

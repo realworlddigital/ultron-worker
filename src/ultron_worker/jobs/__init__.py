@@ -19,6 +19,7 @@ BUILTIN = (
     "ultron_worker.jobs.transcribe",
     "ultron_worker.jobs.inventory",
     "ultron_worker.jobs.publish",
+    "ultron_worker.jobs.segment",
 )
 
 
