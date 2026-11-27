@@ -143,12 +143,57 @@ class FakeBackbone(Backbone):
             if doc is None:
                 raise BackboneError(404, f"no records/{parts[1]}")
             return json.loads(json.dumps(doc))
+        if "parent_asset_id" in body:
+            return self._clip(body)
         content_hash = body["content_hash"]
         if content_hash in self.asset_reject or body.get("org") not in MEDIA_ORGS:
             raise BackboneError(422, f"record.media_asset invalid: org={body.get('org')!r}")
         assert not body["locations"][0]["path"].startswith("/")
         aid = "mas_" + hashlib.sha256(content_hash.encode()).hexdigest()[:24]
         data = json.loads(json.dumps(body))
+        data.setdefault("embedding", None)
+        cur = self.assets.get(aid)
+        if cur is None:
+            data["provenance"]["ingested_by"] = self.actor
+            self.assets[aid] = {"id": aid, "type": "record.media_asset", "version": 1, "data": data}
+            return {"doc": self.assets[aid], "event_id": "e", "replayed": False}
+        data["provenance"]["ingested_by"] = cur["data"]["provenance"]["ingested_by"]
+        data["provenance"]["ingested_at"] = cur["data"]["provenance"]["ingested_at"]
+        if data == cur["data"]:
+            return {"doc": cur, "event_id": None, "replayed": True}
+        cur.update(data=data, version=cur["version"] + 1)
+        return {"doc": cur, "event_id": "e", "replayed": False}
+
+    def _clip(self, body: dict[str, Any]) -> Any:
+        """PUT /media/assets for a clip, as the backbone's clip contract (tsk_db23b53be4aa4333808c)
+        has it: server-derived id from parent + range, org/kind = the parent's, rights null, no
+        content_hash or locations, range inside the parent's duration."""
+        parent = self.assets.get(body["parent_asset_id"])
+        if parent is None:
+            raise BackboneError(422, f"no parent asset {body['parent_asset_id']}")
+        pdata = parent["data"]
+        start, end = body["range_start_sec"], body["range_end_sec"]
+        duration = (pdata.get("technical") or {}).get("duration_sec")
+        problems = [
+            "parent is a clip" if pdata.get("parent_asset_id") else "",
+            "org differs from the parent" if body.get("org") != pdata.get("org") else "",
+            "kind differs from the parent" if body.get("kind") != pdata.get("kind") else "",
+            "rights must be null" if body.get("rights") is not None else "",
+            "no content_hash/locations/rights_review/technical on a clip"
+            if {"content_hash", "locations", "rights_review", "technical"} & set(body)
+            else "",
+            "no duration to clip" if not isinstance(duration, int | float) else "",
+            "bad range" if not (0 <= start < end and end <= (duration or 0)) else "",
+        ]
+        if any(problems) or body.get("parent_asset_id") in self.asset_reject:
+            raise BackboneError(422, f"clip invalid: {[p for p in problems if p]}")
+        key = f"clip:{body['parent_asset_id']}:{start:.3f}:{end:.3f}"
+        aid = "mas_" + hashlib.sha256(key.encode()).hexdigest()[:24]
+        data = json.loads(json.dumps(body))
+        inherited = {
+            k: (pdata.get("technical") or {}).get(k) for k in ("width", "height", "codec", "fps")
+        }
+        data["technical"] = {**inherited, "duration_sec": round(end - start, 3), "size_bytes": None}
         data.setdefault("embedding", None)
         cur = self.assets.get(aid)
         if cur is None:

@@ -51,6 +51,22 @@ ALLOWED = (
 )
 
 
+def _asset_identity(body: dict[str, Any]) -> bool:
+    """A media asset write names what it is: an asset's content_hash, or a clip's parent asset
+    id and range (never both)."""
+    if "parent_asset_id" not in body:
+        return isinstance(body.get("content_hash"), str)
+    start, end = body.get("range_start_sec"), body.get("range_end_sec")
+    numbers = all(isinstance(v, int | float) and not isinstance(v, bool) for v in (start, end))
+    return (
+        "content_hash" not in body
+        and isinstance(body["parent_asset_id"], str)
+        and re.fullmatch(MEDIA_ASSET, body["parent_asset_id"]) is not None
+        and numbers
+        and 0 <= start < end  # type: ignore[operator]
+    )
+
+
 class ScopeViolation(RuntimeError):
     """The runner tried to step outside its own cards. Always a bug, never retried."""
 
@@ -106,8 +122,11 @@ class Backbone:
             raise ScopeViolation("the runner registers only feeders it works itself")
         if path == "/media/sync" and (params or {}).get("status") not in ("pending", "acked"):
             raise ScopeViolation("sync polls name status pending or acked")
-        if path == "/media/assets" and not isinstance((body or {}).get("content_hash"), str):
-            raise ScopeViolation("media asset writes name their content_hash")
+        if path == "/media/assets" and not _asset_identity(body or {}):
+            raise ScopeViolation(
+                "media asset writes name their content_hash, or (a clip) its parent_asset_id "
+                "and range"
+            )
         if (method, path) == ("POST", "/events"):
             body = body or {}
             target = body.get("target") or {}
@@ -250,6 +269,11 @@ class Backbone:
 
     def put_media_asset(self, body: dict[str, Any]) -> Any:
         """Create or replace one record.media_asset (the server derives its id)."""
+        return self.request("PUT", "/media/assets", body=body)
+
+    def put_media_clip(self, body: dict[str, Any]) -> Any:
+        """Create or replace one clip (a virtual record.media_asset: parent + range); the server
+        derives its id from parent_asset_id + range, so the same range is the same record."""
         return self.request("PUT", "/media/assets", body=body)
 
     def media_item(self, item_id: str, body: dict[str, Any]) -> Any:

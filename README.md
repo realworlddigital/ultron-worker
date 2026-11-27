@@ -23,6 +23,7 @@ transcription burn no Devin ACU or API tokens. A localhost status page shows it 
 | `transcribe` | transcribes audio/video with faster-whisper (if installed) | whisper size, e.g. `large-v3` | folder: `<name>.txt` + `<name>.segments.json` per file, plus `index.json` |
 | `catalog_publish` | model-free: publishes the tagged entries of the folders' indexes (via `<root>/_index/catalog.jsonl`) as backbone `record.media_asset` (hashing once and probing where missing; idempotent upsert); org only from `params.org`/`params.orgs` | none (omit `model`) | `.json` report (per-folder created/updated/skipped/duplicates/held/failed) |
 | `folder_inventory` | model-free stat walk of media folders (vision_tag extensions) + unindexed diff against `<root>/_index/catalog.jsonl` | none (omit `model`) | `.jsonl` (one `{root, rel, size_bytes, mtime, media}` per file) + `<stem>.unindexed.json` |
+| `clip_segment` | cuts long published videos into virtual 12-40 s clips (ffmpeg scene + silence boundaries, vision-model usability verdict and per-range caption/tags), upserted as backbone clip records (`record.media_asset` with `parent_asset_id` + range; org = the parent's, rights from the parent); no bytes cut or copied into the catalog; org mapping as `catalog_publish`, unmapped footage held | Ollama vision model, default `muse-glimmer:30b` | `.json` report (per-asset proposed/kept/held + clip ids) |
 
 ComfyUI/media generation is not in v1. To add a kind, write a module that subclasses
 `ultron_worker.jobs.JobKind` and calls `register(...)`, then list it under `runner.job_modules`
