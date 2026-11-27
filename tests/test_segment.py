@@ -355,6 +355,8 @@ def test_propose_prefers_speech_breaks_and_stays_in_bounds() -> None:
     assert propose(1059.0, [], [], **WINDOW) == cuts  # deterministic: same ids on a re-run
     assert propose(50.0, [], [(0.0, 8.0)], **WINDOW)[0][0] == 7.8  # no clip opens on dead air
     assert propose(10.0, [], [], **WINDOW) == []
+    muted = propose(60.0, [20.0, 40.0], [(0.0, 60.0)], **WINDOW)  # silent audio track
+    assert muted == [(0.0, 20.0, "scene"), (20.0, 60.0, "end")]
     assert propose(45.006, [], [], **WINDOW)[-1][1] == 45.0  # never past the parent's end
 
 

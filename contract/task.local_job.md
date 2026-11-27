@@ -139,12 +139,17 @@ org). Window: `min_sec` 12 / `max_sec` 40 (hard bounds), `target_min_sec` 15 /
   the next cut is a speech break (the clip ends just after a silence starts, the next opens just
   before it ends) or a scene change, nearest the middle of the target window, then anywhere in
   the hard bounds, else a hard cut at `target_max_sec`. Dead air at a segment's start and at the
-  end of the video is skipped. Ranges are rounded to 0.01 s and deterministic for the same file.
+  end of the video is skipped; when silence covers 90% or more of a video (a muted track) its
+  audio is ignored and cuts come from scene changes. Ranges are rounded to 0.01 s and deterministic for the same file.
 - **Verdict + tags**: the model sees `frames` frames from inside each segment and replies
   `{"usable", "reason", "caption", "tags"}`; usable = a person mid-action or mid-sentence, a
   working build, a demonstration, a reaction; not dead air, setup, an empty room. A kept
   segment needs a caption and tags (vision_tag's strict parsing and filler filter; one repair
   re-ask, then the asset is retried for just the unjudged segments).
+- **Same bytes**: a file whose size/mtime differs from its tagged index record, or whose size
+  differs from the parent's `technical.size_bytes`, fails its asset (re-tag and re-publish
+  first), so a replaced take never gets clips under the old asset. Saved progress is dropped
+  when the model, prompt, `max_tags`, `options`, window or analysis params change.
 - **Clip record** per kept segment, `PUT /media/assets` with `parent_asset_id`,
   `range_start_sec`, `range_end_sec`, `kind` and `org` (the parent's), `rights: null`,
   `tags.structured` = `caption`, `keywords`, `usable_because`, `segmented_by` (the model),

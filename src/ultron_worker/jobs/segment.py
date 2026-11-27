@@ -103,6 +103,7 @@ DEFAULTS = {
     "silence_min_sec": 0.6,
 }
 PAD = 0.2  # seconds of silence kept either side of a speech-break cut
+MOSTLY_SILENT = 0.9  # silence over this share of a video: its audio is ignored for cutting
 PROMPT = (
     "You are cutting a long video into short clips for social media. The images are frames "
     "sampled in order from ONE {length:.0f}-second segment ({start:.1f}s to {end:.1f}s of the "
@@ -480,9 +481,12 @@ def propose(
     begins just before it ends, so dead air falls between clips) over a scene change, and the
     candidate nearest the middle of the target window; with neither, a hard cut at
     target_max_sec (``cut: forced``). Silence at a segment's start, and at the end of the
-    video, is skipped. A tail shorter
+    video, is skipped, unless silence covers most of the video (a muted track): then the audio
+    is ignored and the cuts come from scene changes. A tail shorter
     than min_sec joins the last segment when that stays within max_sec, else it is dropped.
     Deterministic: the same analysis always gives the same ranges (and so the same clip ids)."""
+    if sum(b - a for a, b in silences) >= MOSTLY_SILENT * duration:
+        silences = []  # a muted or silent track says nothing about speech: cut on scenes
     breaks: list[tuple[float, float, str]] = []  # (end here, next starts here, kind)
     for a, b in silences:
         if b - a >= 2 * PAD:
