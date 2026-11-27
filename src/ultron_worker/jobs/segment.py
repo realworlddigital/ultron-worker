@@ -64,6 +64,7 @@ from .publish import (
     _now,
     _org_for,
     _orgs,
+    _same,
     _under,
     asset_id,
 )
@@ -166,6 +167,9 @@ class ClipSegment(JobKind):
             root, folder = roots.relativize(ctx.allowed(raw, what="input"))  # type: ignore[misc]
             label = f"{root}/{folder}" if folder else root
             indexes = _indexes(root, folder, ctx)
+            out = _same(ctx.allowed(spec.output, what="output target"))
+            if any(_same(index) == out for index in indexes):
+                raise JobError(f"output target {spec.output!r} is a folder index it would replace")
             if not indexes:
                 raise JobError(
                     f"{label}: no folder index (tags.jsonl) in the TOC or in the folder; tag and "

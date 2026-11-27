@@ -157,14 +157,15 @@ def run(make, cfg, raw, tmp_path):
     config = replace(cfg, media_roots=((ROOT, str(raw)),))
     state: dict = {}
 
-    def _run(tid="t1", *, status="done", inputs=None, add=True, ticks=1, hook=None, **params):
+    def _run(tid="t1", *, status="done", inputs=None, add=True, ticks=1, hook=None, output=None,
+             **params):  # fmt: skip
         ollama = state.get("ollama") or Glimmer()
         ollama.hook = hook
         runner, bb, _ = make(bb=state.get("bb"), ollama=ollama, config=config)
         if "bb" not in state:
             bb.assets.update(_parents(raw))
         state.update(bb=bb, ollama=ollama, runner=runner)
-        out = tmp_path / "out" / f"{tid}.json"
+        out = output or tmp_path / "out" / f"{tid}.json"
         if add:
             inputs = inputs or [f"{ROOT}/{NATICK}"]
             bb.add(tid, kind="clip_segment", model="muse-glimmer:30b", inputs=inputs,
@@ -400,3 +401,15 @@ def test_parent_without_a_duration_fails_before_any_model_call(run) -> None:
     bb, note, report, ollama = run(add=False, orgs=ORGS)
     assert report["totals"]["failed"] == 3 and not ollama.calls and not _clips(bb)
     assert "has no technical.duration_sec in the catalog" in note
+
+
+def test_report_target_that_is_a_folder_index_is_refused(run, raw) -> None:
+    index = raw / NATICK / "tags.json"
+    index.write_text('{"items": []}\n')
+    with (raw / "_index" / "catalog.jsonl").open("a") as fh:
+        fh.write(
+            json.dumps({"root": ROOT, "folder": NATICK, "index": f"{NATICK}/tags.json"}) + "\n"
+        )
+    bb, _, _, _ = run(status="needs_david", output=index, orgs=ORGS)
+    assert any("is a folder index" in e.get("summary", "") for e in bb.events)
+    assert index.read_text() == '{"items": []}\n'
