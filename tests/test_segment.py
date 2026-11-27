@@ -356,10 +356,14 @@ def test_propose_prefers_speech_breaks_and_stays_in_bounds() -> None:
     assert propose(50.0, [], [(0.0, 8.0)], **WINDOW)[0][0] == 7.8  # no clip opens on dead air
     assert propose(10.0, [], [], **WINDOW) == []
     muted = propose(60.0, [20.0, 40.0], [(0.0, 60.0)], **WINDOW)  # silent audio track
-    assert muted == [(0.2, 20.0, "scene"), (20.0, 59.8, "silence")]
+    assert muted == [(0.0, 20.0, "scene"), (20.0, 60.0, "end")]
+    assert propose(42.0, [], [(0.0, 42.0)], **WINDOW) == [
+        (0.0, 30.0, "forced"),
+        (30.0, 42.0, "end"),
+    ]
     # a short spoken intro, then a long silent stretch: the stretch is cut, not dropped
     quiet = propose(47.0, [20.0, 33.0], [(4.7, 47.0)], **WINDOW)
-    assert quiet == [(4.9, 33.0, "scene"), (33.0, 46.8, "silence")]
+    assert quiet == [(4.9, 33.0, "scene"), (33.0, 47.0, "end")]
     # a long silence mid-talk is a region of its own between talking clips
     mixed = propose(120.0, [], [(30.0, 60.0)], **WINDOW)
     assert (0.0, 30.2, "silence") in mixed and (30.2, 59.8, "silence") in mixed

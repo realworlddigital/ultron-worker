@@ -104,6 +104,7 @@ DEFAULTS = {
 }
 PAD = 0.2  # seconds of silence kept either side of a speech-break cut
 LONG_PAUSE = 3.0  # a silence longer than this is a region edge, not a speech break
+EDGE_SLACK = 0.05  # a silence this close to the start/end of the video reaches it
 PROMPT = (
     "You are cutting a long video into short clips for social media. The images are frames "
     "sampled in order from ONE {length:.0f}-second segment ({start:.1f}s to {end:.1f}s of the "
@@ -489,8 +490,11 @@ def propose(
     edges = {0.0, duration}
     breaks: list[tuple[float, float, str]] = []  # (end here, next starts here, kind)
     for a, b in silences:
-        if b - a > LONG_PAUSE:
-            edges |= {min(max(a + PAD, 0.0), duration), min(max(b - PAD, 0.0), duration)}
+        if b - a > LONG_PAUSE:  # padded towards the talk; at the video's ends there is none
+            if a > EDGE_SLACK:
+                edges.add(a + PAD)
+            if b < duration - EDGE_SLACK:
+                edges.add(b - PAD)
         elif b - a >= 2 * PAD:
             breaks.append((a + PAD, b - PAD, "speech_break"))
     breaks += [(t, t, "scene") for t in scenes]
