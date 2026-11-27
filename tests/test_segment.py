@@ -347,7 +347,7 @@ def test_bad_specs_go_to_david(run, params, why) -> None:
 def test_propose_prefers_speech_breaks_and_stays_in_bounds() -> None:
     silences = [(24.0, 26.0), (50.0, 53.0), (80.0, 90.0)]
     assert propose(90.0, [40.0], silences, **WINDOW) == [
-        (0.0, 24.2, "speech_break"), (25.8, 50.2, "speech_break"), (52.8, 80.2, "end")
+        (0.0, 24.2, "speech_break"), (25.8, 50.2, "speech_break"), (52.8, 80.2, "silence")
     ]  # fmt: skip
     cuts = propose(1059.0, [], [], **WINDOW)
     assert cuts[0] == (0.0, 30.0, "forced") and cuts[-1][1] == 1059.0
@@ -356,7 +356,13 @@ def test_propose_prefers_speech_breaks_and_stays_in_bounds() -> None:
     assert propose(50.0, [], [(0.0, 8.0)], **WINDOW)[0][0] == 7.8  # no clip opens on dead air
     assert propose(10.0, [], [], **WINDOW) == []
     muted = propose(60.0, [20.0, 40.0], [(0.0, 60.0)], **WINDOW)  # silent audio track
-    assert muted == [(0.0, 20.0, "scene"), (20.0, 60.0, "end")]
+    assert muted == [(0.2, 20.0, "scene"), (20.0, 59.8, "silence")]
+    # a short spoken intro, then a long silent stretch: the stretch is cut, not dropped
+    quiet = propose(47.0, [20.0, 33.0], [(4.7, 47.0)], **WINDOW)
+    assert quiet == [(4.9, 33.0, "scene"), (33.0, 46.8, "silence")]
+    # a long silence mid-talk is a region of its own between talking clips
+    mixed = propose(120.0, [], [(30.0, 60.0)], **WINDOW)
+    assert (0.0, 30.2, "silence") in mixed and (30.2, 59.8, "silence") in mixed
     assert propose(45.006, [], [], **WINDOW)[-1][1] == 45.0  # never past the parent's end
 
 

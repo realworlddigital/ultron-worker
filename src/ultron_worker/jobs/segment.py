@@ -103,7 +103,7 @@ DEFAULTS = {
     "silence_min_sec": 0.6,
 }
 PAD = 0.2  # seconds of silence kept either side of a speech-break cut
-MOSTLY_SILENT = 0.9  # silence over this share of a video: its audio is ignored for cutting
+LONG_PAUSE = 3.0  # a silence longer than this is a region edge, not a speech break
 PROMPT = (
     "You are cutting a long video into short clips for social media. The images are frames "
     "sampled in order from ONE {length:.0f}-second segment ({start:.1f}s to {end:.1f}s of the "
@@ -474,44 +474,52 @@ def propose(
     target_max_sec: float,
     frames: float = 0,
 ) -> list[tuple[float, float, str]]:
-    """Greedy cut of ``[0, duration]`` into (start, end, cut) segments of min_sec..max_sec.
+    """Cut ``[0, duration]`` into (start, end, cut) segments of min_sec..max_sec.
 
-    Each next cut is looked for in the target window first, then anywhere in the hard bounds,
-    preferring a speech break (a silence: the segment ends just after it starts and the next
-    begins just before it ends, so dead air falls between clips) over a scene change, and the
-    candidate nearest the middle of the target window; with neither, a hard cut at
-    target_max_sec (``cut: forced``). Silence at a segment's start, and at the end of the
-    video, is skipped, unless silence covers most of the video (a muted track): then the audio
-    is ignored and the cuts come from scene changes. A tail shorter
-    than min_sec joins the last segment when that stays within max_sec, else it is dropped.
-    Deterministic: the same analysis always gives the same ranges (and so the same clip ids)."""
-    if sum(b - a for a, b in silences) >= MOSTLY_SILENT * duration:
-        silences = []  # a muted or silent track says nothing about speech: cut on scenes
+    A silence longer than LONG_PAUSE splits the video into regions at its edges, so a talking
+    clip never runs into a long silent stretch; the silent stretch is a region of its own, cut
+    and judged like any other (silence is not dead air: the vision model decides that). A
+    shorter pause is a speech break: the segment ends just after it starts and the next begins
+    just before it ends. Within a region each next cut is looked for in the target window
+    first, then anywhere in the hard bounds, preferring a speech break over a scene change and
+    the candidate nearest the middle of the target window; with neither, a hard cut at
+    target_max_sec (``cut: forced``). A region's tail shorter than min_sec joins its last
+    segment when that stays within max_sec, else it is dropped (as is a region shorter than
+    min_sec). Deterministic: the same analysis always gives the same ranges (and so ids)."""
+    edges = {0.0, duration}
     breaks: list[tuple[float, float, str]] = []  # (end here, next starts here, kind)
     for a, b in silences:
-        if b - a >= 2 * PAD:
+        if b - a > LONG_PAUSE:
+            edges |= {min(max(a + PAD, 0.0), duration), min(max(b - PAD, 0.0), duration)}
+        elif b - a >= 2 * PAD:
             breaks.append((a + PAD, b - PAD, "speech_break"))
     breaks += [(t, t, "scene") for t in scenes]
     breaks.sort()
-    mid = (target_min_sec + target_max_sec) / 2
-    for a, b in silences:  # trailing dead air is never part of a clip
-        if b >= duration - 0.05:
-            duration = min(duration, a + PAD)
+    bounds = sorted(edges)
     out: list[tuple[float, float, str]] = []
-    start = 0.0
-    while True:
-        for a, b in silences:  # don't open a clip on dead air
-            if a - PAD <= start < b - PAD:
-                start = b - PAD
-        if duration - start < min_sec:
-            break
-        if duration - start <= max_sec:
-            out.append((start, duration, "end"))
-            start = duration
-            break
+    for lo, hi in zip(bounds, bounds[1:], strict=False):
+        last = "end" if hi >= duration else "silence"
+        inside = [c for c in breaks if lo < c[0] and c[1] < hi]
+        out += _cut(lo, hi, last, inside, min_sec, max_sec, target_min_sec, target_max_sec)
+    end = math.floor(duration * 100) / 100  # a range never ends past the parent
+    return [(round(s, 2), min(round(e, 2), end), cut) for s, e, cut in out]
+
+
+def _cut(
+    lo: float, hi: float, last: str, breaks: list[tuple[float, float, str]], min_sec: float,
+    max_sec: float, target_min_sec: float, target_max_sec: float,
+) -> list[tuple[float, float, str]]:  # fmt: skip
+    """The greedy cut of one region ``[lo, hi]`` (see :func:`propose`)."""
+    mid = (target_min_sec + target_max_sec) / 2
+    out: list[tuple[float, float, str]] = []
+    start = lo
+    while hi - start >= min_sec:
+        if hi - start <= max_sec:
+            out.append((start, hi, last))
+            return out
         best = None
-        for lo, hi in ((target_min_sec, target_max_sec), (min_sec, max_sec)):
-            found = [c for c in breaks if start + lo <= c[0] <= start + hi]
+        for wlo, whi in ((target_min_sec, target_max_sec), (min_sec, max_sec)):
+            found = [c for c in breaks if start + wlo <= c[0] <= start + whi]
             if found:
                 best = min(
                     found, key=lambda c: (c[2] != "speech_break", abs(c[0] - start - mid), c[0])
@@ -520,21 +528,9 @@ def propose(
         end, nxt, cut = best or (start + target_max_sec, start + target_max_sec, "forced")
         out.append((start, end, cut))
         start = max(nxt, end)
-    tail = duration - start
-    if (
-        out
-        and 0 < tail < min_sec
-        and duration - out[-1][0] <= max_sec
-        and not _silent(start, duration, silences)
-    ):
-        s, _, _ = out.pop()
-        out.append((s, duration, "end"))
-    last = math.floor(duration * 100) / 100  # a range never ends past the parent
-    return [(round(s, 2), min(round(e, 2), last), cut) for s, e, cut in out]
-
-
-def _silent(start: float, end: float, silences: list[tuple[float, float]]) -> bool:
-    return any(a <= start + PAD and end - PAD <= b for a, b in silences)
+    if out and hi > start and hi - out[-1][0] <= max_sec:
+        out.append((out.pop()[0], hi, last))
+    return out
 
 
 def _analyse(

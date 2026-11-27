@@ -135,12 +135,14 @@ org). Window: `min_sec` 12 / `max_sec` 40 (hard bounds), `target_min_sec` 15 /
 - **Per asset** (one work item per parent video; its catalog record must exist, so run
   `catalog_publish` first): videos no longer than `max_sec` are counted `short`, not cut. The
   file is copied to the item's scratch once; one ffmpeg pass finds scene changes (5 fps,
-  downscaled, `select=gt(scene,thr)`) and silences (`silencedetect`). Segments are cut greedily:
-  the next cut is a speech break (the clip ends just after a silence starts, the next opens just
-  before it ends) or a scene change, nearest the middle of the target window, then anywhere in
-  the hard bounds, else a hard cut at `target_max_sec`. Dead air at a segment's start and at the
-  end of the video is skipped; when silence covers 90% or more of a video (a muted track) its
-  audio is ignored and cuts come from scene changes. Ranges are rounded to 0.01 s and deterministic for the same file.
+  downscaled, `select=gt(scene,thr)`) and silences (`silencedetect`). A silence over 3 s splits
+  the video into regions at its edges (a talking clip never runs into a long silent stretch;
+  the stretch is cut and judged like any other, since silence is not dead air: the model
+  decides). Within a region segments are cut greedily: the next cut is a speech break (a
+  shorter pause: the clip ends just after it starts, the next opens just before it ends) or a
+  scene change, nearest the middle of the target window, then anywhere in the hard bounds,
+  else a hard cut at `target_max_sec`. A region (or tail) shorter than `min_sec` is dropped or
+  joins the region's last segment when that stays within `max_sec`. Ranges are rounded to 0.01 s and deterministic for the same file.
 - **Verdict + tags**: the model sees `frames` frames from inside each segment and replies
   `{"usable", "reason", "caption", "tags"}`; usable = a person mid-action or mid-sentence, a
   working build, a demonstration, a reaction; not dead air, setup, an empty room. A kept
