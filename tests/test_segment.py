@@ -426,3 +426,20 @@ def test_replaced_footage_is_not_clipped_under_the_old_asset(run, raw, videos, b
     bb, note, report, _ = run(add=False, orgs=ORGS)
     assert talk not in {c["parent_asset_id"] for c in _clips(bb).values()}
     assert "file changed since it was published" in note
+
+
+def test_saved_progress_is_dropped_when_model_prompt_or_window_change(tmp_path) -> None:
+    from ultron_worker.jobs.base import JobSpec
+
+    def spec(model="muse-glimmer:30b", **params):
+        return JobSpec("clip_segment", ("x",), model, "o.json", 10, params)
+
+    path, stamp = tmp_path / "s.json", {"size_bytes": 1, "mtime": 1.0}
+    base = segment._settings(spec(), segment._window(spec()))
+    state = segment._load_state(path, stamp, base)
+    state["segments"] = [{"start": 0, "end": 20, "verdict": "kept", "clip_id": "mas_x"}]
+    segment._save_state(path, state)
+    assert segment._load_state(path, stamp, base)["segments"]  # same settings: resumed
+    for changed in (spec("llava:13b"), spec(prompt="other {start}"), spec(max_sec=35)):
+        settings = segment._settings(changed, segment._window(changed))
+        assert segment._load_state(path, stamp, settings)["segments"] is None

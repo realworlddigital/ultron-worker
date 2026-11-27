@@ -277,7 +277,7 @@ class ClipSegment(JobKind):
             return {**result, "short": True, "proposed": 0, "kept": 0, "clips": []}
 
         state_path = ctx.work_dir / STATE_DIR / f"{aid}.json"
-        state = _load_state(state_path, stamp, win)
+        state = _load_state(state_path, stamp, _settings(spec, win))
         scratch = ctx.work_dir / SCRATCH_DIR / hashlib.sha1(item.key.encode()).hexdigest()[:16]
         local: list[Path] = []  # the scratch copy, made on first need
 
@@ -763,20 +763,31 @@ def _num(value: Any) -> float | None:
     return float(value)
 
 
-def _load_state(path: Path, stamp: dict[str, Any], win: dict[str, float]) -> dict[str, Any]:
-    """This asset's saved progress, unless the file or the window changed since."""
+def _settings(spec: JobSpec, win: dict[str, float]) -> dict[str, Any]:
+    """Everything a saved analysis and its verdicts depend on: a change re-runs them."""
+    analysis = {k: spec.params.get(k, DEFAULTS[k])
+                for k in ("scene_threshold", "silence_db", "silence_min_sec")}  # fmt: skip
+    return json.loads(json.dumps({
+        **win, **analysis, "model": spec.model or DEFAULT_MODEL,
+        "prompt": spec.params.get("prompt"), "options": spec.params.get("options"),
+        "max_tags": spec.params.get("max_tags", DEFAULTS["max_tags"]),
+    }, default=str))  # fmt: skip
+
+
+def _load_state(path: Path, stamp: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+    """This asset's saved progress, unless the file or the settings changed since."""
     with contextlib.suppress(OSError, ValueError):
         state = json.loads(path.read_text(encoding="utf-8"))
         same = (
             isinstance(state, dict)
             and state.get("v") == STATE_VERSION
-            and state.get("window") == win
+            and state.get("settings") == settings
             and has_stamp(state.get("stamp") or {})
             and stamp_matches(state["stamp"], stamp)
         )
         if same:
             return state
-    return {"v": STATE_VERSION, "stamp": stamp, "window": win, "segments": None}
+    return {"v": STATE_VERSION, "stamp": stamp, "settings": settings, "segments": None}
 
 
 def _save_state(path: Path, state: dict[str, Any]) -> None:
